@@ -1,0 +1,248 @@
+AWSTemplateFormatVersion: '2010-09-09'
+Description: CodeBuild project for deploying OCR Vision Lab
+
+Parameters:
+  AdminUserEmail:
+    Type: String
+    Description: Admin user email for Cognito authentication
+    AllowedPattern: '^[a-zA-Z0-9._%+-]+@[a-zA-Z0-9.-]+\.[a-zA-Z]{2,}$'
+    ConstraintDescription: Must be a valid email address
+
+  InstanceType:
+    Type: String
+    Default: ml.g5.xlarge
+    AllowedValues:
+      - ml.g5.xlarge
+      - ml.g5.2xlarge
+      - ml.g4dn.xlarge
+    Description: SageMaker instance type for OCR inference
+
+  RepoUrl:
+    Type: String
+    Default: 'https://github.com/yunwoong7/aws-ocr-vision-lab.git'
+    Description: Repository URL
+
+  Version:
+    Type: String
+    Default: 'main'
+    Description: Branch or tag to deploy
+
+Resources:
+  CodeBuildServiceRole:
+    Type: AWS::IAM::Role
+    Properties:
+      AssumeRolePolicyDocument:
+        Version: '2012-10-17'
+        Statement:
+          - Effect: Allow
+            Principal:
+              Service: codebuild.amazonaws.com
+            Action: sts:AssumeRole
+      ManagedPolicyArns:
+        - arn:aws:iam::aws:policy/PowerUserAccess
+      Policies:
+        - PolicyName: CodeBuildServiceRolePolicy
+          PolicyDocument:
+            Version: '2012-10-17'
+            Statement:
+              - Effect: Allow
+                Action:
+                  - logs:CreateLogGroup
+                  - logs:CreateLogStream
+                  - logs:PutLogEvents
+                Resource: '*'
+              - Effect: Allow
+                Action:
+                  - iam:CreateRole
+                  - iam:DeleteRole
+                  - iam:AttachRolePolicy
+                  - iam:DetachRolePolicy
+                  - iam:PutRolePolicy
+                  - iam:DeleteRolePolicy
+                  - iam:GetRole
+                  - iam:GetRolePolicy
+                  - iam:PassRole
+                  - iam:TagRole
+                  - iam:UntagRole
+                  - iam:ListRolePolicies
+                  - iam:ListAttachedRolePolicies
+                  - iam:CreatePolicy
+                  - iam:DeletePolicy
+                  - iam:GetPolicy
+                  - iam:GetPolicyVersion
+                  - iam:ListPolicyVersions
+                  - iam:CreateServiceLinkedRole
+                Resource: '*'
+              - Effect: Allow
+                Action:
+                  - ssm:GetParameter
+                  - ssm:PutParameter
+                  - ssm:DeleteParameter
+                Resource: '*'
+              - Effect: Allow
+                Action:
+                  - iam:UpdateAssumeRolePolicy
+                  - iam:UpdateRole
+                Resource:
+                  - !Sub 'arn:aws:iam::${AWS::AccountId}:role/cdk-*'
+              - Effect: Allow
+                Action:
+                  - sagemaker:*
+                Resource: '*'
+              - Effect: Allow
+                Action:
+                  - ecr:*
+                Resource: '*'
+              - Effect: Allow
+                Action:
+                  - cognito-idp:*
+                Resource: '*'
+
+  CodeBuildProject:
+    Type: AWS::CodeBuild::Project
+    Properties:
+      Name: ocr-vision-lab-deploy
+      ServiceRole: !GetAtt CodeBuildServiceRole.Arn
+      Artifacts:
+        Type: NO_ARTIFACTS
+      Environment:
+        Type: LINUX_CONTAINER
+        ComputeType: BUILD_GENERAL1_LARGE
+        Image: aws/codebuild/standard:7.0
+        PrivilegedMode: true
+        EnvironmentVariables:
+          - Name: ADMIN_USER_EMAIL
+            Value: !Ref AdminUserEmail
+          - Name: INSTANCE_TYPE
+            Value: !Ref InstanceType
+          - Name: REPO_URL
+            Value: !Ref RepoUrl
+          - Name: VERSION
+            Value: !Ref Version
+          - Name: AWS_DEFAULT_REGION
+            Value: !Ref AWS::Region
+          - Name: AWS_ACCOUNT_ID
+            Value: !Ref AWS::AccountId
+      Source:
+        Type: NO_SOURCE
+        BuildSpec: |
+          version: 0.2
+          phases:
+            pre_build:
+              commands:
+                - echo "Installing dependencies..."
+                - npm install -g aws-cdk@latest pnpm
+                - git clone $REPO_URL /tmp/aws-ocr-vision-lab
+                - cd /tmp/aws-ocr-vision-lab
+                - git checkout $VERSION
+                - pnpm install
+
+            build:
+              commands:
+                - cd /tmp/aws-ocr-vision-lab
+
+                # Bootstrap CDK if needed
+                - |
+                  STACK_STATUS=$(aws cloudformation describe-stacks --stack-name CDKToolkit --query 'Stacks[0].StackStatus' --output text 2>/dev/null || echo "STACK_NOT_FOUND")
+                  if [ "$STACK_STATUS" = "STACK_NOT_FOUND" ] || [ "$STACK_STATUS" = "ROLLBACK_COMPLETE" ]; then
+                    echo "Bootstrapping CDK..."
+                    npx cdk bootstrap aws://$AWS_ACCOUNT_ID/$AWS_DEFAULT_REGION --require-approval never
+                  fi
+
+                # Deploy InfraStack (S3, ECR, CodeBuild for Docker)
+                - echo "Deploying InfraStack..."
+                - cd packages/infra
+                - npx cdk deploy PaddleOCR-Infra --require-approval never
+
+                # Build Docker image using CodeBuild
+                - |
+                  echo "Building Docker image..."
+                  BUILD_PROJECT=$(aws cloudformation describe-stacks \
+                    --stack-name PaddleOCR-Infra \
+                    --query 'Stacks[0].Outputs[?OutputKey==`CodeBuildProjectName`].OutputValue' \
+                    --output text 2>/dev/null || echo "")
+
+                  if [ -n "$BUILD_PROJECT" ] && [ "$BUILD_PROJECT" != "None" ]; then
+                    BUILD_ID=$(aws codebuild start-build --project-name $BUILD_PROJECT --query 'build.id' --output text)
+                    echo "Started Docker build: $BUILD_ID"
+
+                    # Wait for build to complete
+                    while true; do
+                      STATUS=$(aws codebuild batch-get-builds --ids $BUILD_ID --query 'builds[0].buildStatus' --output text)
+                      echo "Build status: $STATUS"
+                      if [ "$STATUS" = "SUCCEEDED" ]; then
+                        echo "Docker image built successfully"
+                        break
+                      elif [ "$STATUS" = "FAILED" ] || [ "$STATUS" = "STOPPED" ]; then
+                        echo "Docker build failed"
+                        exit 1
+                      fi
+                      sleep 30
+                    done
+                  fi
+
+                # Deploy ModelStack (upload inference.py as model.tar.gz)
+                - echo "Deploying ModelStack..."
+                - npx cdk deploy PaddleOCR-Model --require-approval never
+
+                # Deploy ApplicationStack (Cognito, SageMaker, API, Frontend)
+                - |
+                  echo "Deploying ApplicationStack..."
+                  npx cdk deploy PaddleOCR-Application \
+                    --require-approval never \
+                    --context adminUserEmail="$ADMIN_USER_EMAIL" \
+                    --context instanceType="$INSTANCE_TYPE"
+
+                # Get outputs
+                - |
+                  FRONTEND_URL=$(aws cloudformation describe-stacks \
+                    --stack-name PaddleOCR-Application \
+                    --query 'Stacks[0].Outputs[?OutputKey==`FrontendUrl`].OutputValue' \
+                    --output text 2>/dev/null || echo "")
+
+                  USER_POOL_ID=$(aws cloudformation describe-stacks \
+                    --stack-name PaddleOCR-Application \
+                    --query 'Stacks[0].Outputs[?OutputKey==`UserPoolId`].OutputValue' \
+                    --output text 2>/dev/null || echo "")
+
+                  # Get temporary password from Cognito
+                  if [ -n "$USER_POOL_ID" ]; then
+                    TEMP_PASSWORD=$(aws cognito-idp admin-create-user \
+                      --user-pool-id $USER_POOL_ID \
+                      --username "$ADMIN_USER_EMAIL" \
+                      --user-attributes Name=email,Value="$ADMIN_USER_EMAIL" Name=email_verified,Value=true \
+                      --temporary-password "TempPass123!" \
+                      --message-action SUPPRESS \
+                      --query 'User.Username' \
+                      --output text 2>/dev/null || echo "User already exists")
+
+                    if [ "$TEMP_PASSWORD" = "User already exists" ]; then
+                      echo "Admin user already exists"
+                      TEMP_PASSWORD="(existing user - check email or reset password)"
+                    else
+                      TEMP_PASSWORD="TempPass123!"
+                    fi
+                  fi
+
+                  echo "==========================================="
+                  echo "Deployment Complete!"
+                  echo "==========================================="
+                  echo "FrontendURL = $FRONTEND_URL"
+                  echo "AdminEmail = $ADMIN_USER_EMAIL"
+                  echo "TemporaryPassword = $TEMP_PASSWORD"
+                  echo "==========================================="
+
+          post_build:
+            commands:
+              - echo "Deployment finished at $(date)"
+
+      TimeoutInMinutes: 90
+
+Outputs:
+  ProjectName:
+    Value: !Ref CodeBuildProject
+    Description: CodeBuild project name
+
+  ServiceRoleArn:
+    Value: !GetAtt CodeBuildServiceRole.Arn
+    Description: CodeBuild service role ARN

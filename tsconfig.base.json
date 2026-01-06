@@ -1,0 +1,26 @@
+{
+  "compileOnSave": false,
+  "compilerOptions": {
+    "rootDir": ".",
+    "sourceMap": true,
+    "declaration": false,
+    "moduleResolution": "node",
+    "emitDecoratorMetadata": true,
+    "experimentalDecorators": true,
+    "importHelpers": true,
+    "target": "es2015",
+    "module": "esnext",
+    "lib": ["es2020", "dom"],
+    "skipLibCheck": true,
+    "skipDefaultLibCheck": true,
+    "baseUrl": ".",
+    "paths": {
+      ":aws-ocr-vision-lab/frontend": ["packages/frontend/src/index.ts"],
+      ":aws-ocr-vision-lab/common-constructs": [
+        "dist/packages/common/constructs/tsc/src/index.js"
+      ],
+      ":aws-ocr-vision-lab/infra": ["dist/packages/infra/tsc/src/index.js"]
+    }
+  },
+  "exclude": ["node_modules", "tmp"]
+}
