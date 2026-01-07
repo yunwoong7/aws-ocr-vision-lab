@@ -53,10 +53,11 @@
     "load:runtime-config": {
       "executor": "nx:run-commands",
       "metadata": {
-        "description": "Load runtime config from your deployed stack for dev purposes. You must set your AWS CLI credentials whilst calling 'pnpm exec nx run @aws-ocr-vision-lab/frontend:load:runtime-config'"
+        "description": "Load runtime config from your deployed stack for dev purposes."
       },
       "options": {
-        "command": "aws s3 cp s3://`aws cloudformation describe-stacks --query \"Stacks[?starts_with(StackName, 'aws-ocr-vision-lab-')][].Outputs[] | [?contains(OutputKey, 'FrontendWebsiteBucketName')].OutputValue\" --output text`/runtime-config.json './packages/frontend/public/runtime-config.json'"
+        "command": "./scripts/fetch-runtime-config.sh",
+        "cwd": "{projectRoot}"
       }
     },
     "preview": {
@@ -76,6 +77,7 @@
       }
     },
     "serve": {
+      "dependsOn": ["load:runtime-config"],
       "executor": "@nx/vite:dev-server",
       "defaultConfiguration": "development",
       "options": {

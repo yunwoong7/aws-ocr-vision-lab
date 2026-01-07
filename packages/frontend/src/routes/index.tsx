@@ -131,6 +131,20 @@ const FitIcon = () => (
   </svg>
 );
 
+const RetryIcon = () => (
+  <svg
+    width="14"
+    height="14"
+    viewBox="0 0 24 24"
+    fill="none"
+    stroke="currentColor"
+    strokeWidth="2"
+  >
+    <polyline points="23 4 23 10 17 10" />
+    <path d="M20.49 15a9 9 0 1 1-2.12-9.36L23 10" />
+  </svg>
+);
+
 type Step = 'upload' | 'options' | 'result';
 
 function OcrPage() {
@@ -179,6 +193,7 @@ function OcrPage() {
   const [dragStart, setDragStart] = useState({ x: 0, y: 0 });
   const [showBbox, setShowBbox] = useState(true);
   const imageContainerRef = useRef<HTMLDivElement>(null);
+  const resultImageRef = useRef<HTMLImageElement>(null);
 
   // Current job (from history)
   const currentJob = jobs.find((j) => j.id === currentJobId);
@@ -341,6 +356,18 @@ function OcrPage() {
   }, []);
 
   // Polling for job status
+  const pollTimeoutRef = useRef<ReturnType<typeof setTimeout> | null>(null);
+
+  // Cleanup polling on unmount
+  useEffect(() => {
+    return () => {
+      if (pollTimeoutRef.current) {
+        clearTimeout(pollTimeoutRef.current);
+        pollTimeoutRef.current = null;
+      }
+    };
+  }, []);
+
   const pollJobStatus = useCallback(
     async (jobId: string) => {
       const apiUrl = runtimeConfig.apiUrl || runtimeConfig.apis?.ocr;
@@ -374,12 +401,12 @@ function OcrPage() {
           setProcessingJobId(null);
           alert(data.error || 'Processing failed');
         } else {
-          // Still processing, poll again
-          setTimeout(() => pollJobStatus(jobId), 3000);
+          // Still processing, poll again (with cleanup support)
+          pollTimeoutRef.current = setTimeout(() => pollJobStatus(jobId), 3000);
         }
       } catch (error) {
         console.error('Poll error:', error);
-        setTimeout(() => pollJobStatus(jobId), 5000);
+        pollTimeoutRef.current = setTimeout(() => pollJobStatus(jobId), 5000);
       }
     },
     [runtimeConfig, auth.user?.id_token, updateJob],
@@ -396,6 +423,7 @@ function OcrPage() {
       id: jobId,
       filename: imageData.filename,
       model: selectedModel,
+      modelOptions: modelOptions,
       status: 'processing',
       createdAt: new Date(),
       imageData: imageData.base64,
@@ -791,6 +819,25 @@ function OcrPage() {
               <button
                 className="btn btn-sm btn-outline"
                 onClick={() => {
+                  // Keep the image, go back to options
+                  const job =
+                    currentJob || jobs.find((j) => j.id === processingJobId);
+                  if (job?.imageData) {
+                    setImageData({
+                      base64: job.imageData,
+                      filename: job.filename,
+                    });
+                    setPreviewUrl(`data:image/jpeg;base64,${job.imageData}`);
+                    setStep('options');
+                    setCurrentJobId(null);
+                  }
+                }}
+              >
+                <RetryIcon /> Retry
+              </button>
+              <button
+                className="btn btn-sm btn-outline"
+                onClick={() => {
                   setStep('upload');
                   setCurrentJobId(null);
                 }}
@@ -813,10 +860,10 @@ function OcrPage() {
                 {previewUrl && (
                   <>
                     <img
+                      ref={resultImageRef}
                       src={previewUrl}
                       alt="Document"
                       className="result-image"
-                      id="result-image"
                     />
                     {/* Block overlays for Structure format */}
                     {showBbox &&
@@ -824,9 +871,7 @@ function OcrPage() {
                       blocks.map((block, idx) => {
                         const [x1, y1, x2, y2] = block.block_bbox;
                         const structData = resultData as OcrStructureResultData;
-                        const imageEl = document.getElementById(
-                          'result-image',
-                        ) as HTMLImageElement;
+                        const imageEl = resultImageRef.current;
                         const scaleX = imageEl
                           ? imageEl.clientWidth / structData.width
                           : 1;
@@ -854,9 +899,7 @@ function OcrPage() {
                       v5Data &&
                       v5Data.rec_boxes.map((box, idx) => {
                         const [x1, y1, x2, y2] = box;
-                        const imageEl = document.getElementById(
-                          'result-image',
-                        ) as HTMLImageElement;
+                        const imageEl = resultImageRef.current;
                         // Use natural dimensions for scaling
                         const scaleX = imageEl
                           ? imageEl.clientWidth / imageEl.naturalWidth
@@ -887,6 +930,57 @@ function OcrPage() {
 
           {/* Content Panel */}
           <div className="result-content-panel">
+            {/* Model Settings Info */}
+            {(() => {
+              const job =
+                currentJob || jobs.find((j) => j.id === processingJobId);
+              if (!job) return null;
+              const modelInfo = MODEL_INFO[job.model];
+              const options = job.modelOptions as
+                | Record<string, unknown>
+                | undefined;
+              const langCode = options?.lang as string | undefined;
+              const langInfo = langCode
+                ? SUPPORTED_LANGUAGES.find((l) => l.code === langCode)
+                : null;
+
+              return (
+                <div className="model-settings-info">
+                  <div className="model-settings-item">
+                    <span className="model-settings-label">Model</span>
+                    <span className="model-settings-value">
+                      {modelInfo?.title || job.model}
+                    </span>
+                  </div>
+                  {langInfo && (
+                    <div className="model-settings-item">
+                      <span className="model-settings-label">Language</span>
+                      <span className="model-settings-value">
+                        {langInfo.name}
+                      </span>
+                    </div>
+                  )}
+                  {options &&
+                    Object.entries(options).map(([key, value]) => {
+                      if (key === 'lang' || value === false) return null;
+                      const optionLabel = key
+                        .replace(/^use_/, '')
+                        .replace(/_/g, ' ')
+                        .replace(/\b\w/g, (c) => c.toUpperCase());
+                      return (
+                        <div key={key} className="model-settings-item">
+                          <span className="model-settings-label">
+                            {optionLabel}
+                          </span>
+                          <span className="model-settings-value model-settings-enabled">
+                            Enabled
+                          </span>
+                        </div>
+                      );
+                    })}
+                </div>
+              );
+            })()}
             <div className="result-tabs">
               {(['blocks', 'json', 'markdown'] as ResultViewTab[]).map(
                 (tab) => (
@@ -980,10 +1074,58 @@ function OcrPage() {
       }
     });
 
-    // Filter out remaining empty blocks
+    // Filter out empty blocks, but keep visual blocks (image, chart, seal, etc.) even without content
+    const visualBlockTypes = [
+      'image',
+      'picture',
+      'figure',
+      'chart',
+      'seal',
+      'stamp',
+    ];
     const filteredBlocks = processedBlocks.filter(
-      (block) => block.block_content && block.block_content.trim() !== '',
+      (block) =>
+        (block.block_content && block.block_content.trim() !== '') ||
+        visualBlockTypes.includes(block.block_label),
     );
+
+    // Helper function to render cropped image
+    const renderCroppedImage = (block: OcrBlock) => {
+      if (!previewUrl) return null;
+      const [x1, y1, x2, y2] = block.block_bbox;
+      const structData = resultData as OcrStructureResultData;
+      if (!structData.width || !structData.height) return null;
+
+      const cropWidth = x2 - x1;
+      const cropHeight = y2 - y1;
+
+      return (
+        <div
+          style={{
+            position: 'relative',
+            width: '100%',
+            maxWidth: '300px',
+            height: Math.min(200, (cropHeight / cropWidth) * 300),
+            overflow: 'hidden',
+            borderRadius: '8px',
+            background: 'var(--bg-tertiary)',
+          }}
+        >
+          <img
+            src={previewUrl}
+            alt={`${block.block_label} block`}
+            style={{
+              position: 'absolute',
+              width: `${(structData.width / cropWidth) * 100}%`,
+              height: 'auto',
+              left: `${(-x1 / cropWidth) * 100}%`,
+              top: `${(-y1 / cropHeight) * 100}%`,
+              maxWidth: 'none',
+            }}
+          />
+        </div>
+      );
+    };
 
     return (
       <div className="blocks-list">
@@ -1019,6 +1161,10 @@ function OcrPage() {
                     className="block-content"
                     dangerouslySetInnerHTML={{ __html: block.block_content }}
                   />
+                ) : visualBlockTypes.includes(block.block_label) &&
+                  (!block.block_content ||
+                    block.block_content.trim() === '') ? (
+                  renderCroppedImage(block)
                 ) : (
                   <div
                     className="block-content"

@@ -155,9 +155,60 @@ body {
   text-overflow: ellipsis;
 }
 
+.sidebar-item-model {
+  font-size: 9px;
+  padding: 2px 5px;
+  background: var(--bg-tertiary);
+  border-radius: 4px;
+  color: var(--text-muted);
+  flex-shrink: 0;
+}
+
 .sidebar-item-time {
   font-size: 11px;
   color: var(--text-muted);
+}
+
+.sidebar-item-delete {
+  width: 20px;
+  height: 20px;
+  padding: 2px;
+  border: none;
+  background: transparent;
+  color: var(--text-muted);
+  cursor: pointer;
+  border-radius: 4px;
+  opacity: 0;
+  transition: all 0.15s ease;
+  flex-shrink: 0;
+}
+
+.sidebar-item:hover .sidebar-item-delete {
+  opacity: 1;
+}
+
+.sidebar-item-delete:hover {
+  background: rgba(255, 100, 100, 0.2);
+  color: #ff6464;
+}
+
+.sidebar-item.no-image {
+  opacity: 0.5;
+}
+
+.sidebar-item.no-image .sidebar-item-text::after {
+  content: ' (no image)';
+  font-size: 10px;
+  color: var(--text-muted);
+}
+
+.sidebar-notice {
+  margin-top: auto;
+  padding: 12px 16px;
+  font-size: 10px;
+  color: var(--text-muted);
+  line-height: 1.4;
+  opacity: 0.7;
 }
 
 .sidebar-footer {
@@ -1058,6 +1109,56 @@ body {
 .block-overlay.doc_title {
   background: rgba(255, 100, 100, 0.3);
 }
+.block-overlay.image,
+.block-overlay.figure,
+.block-overlay.picture {
+  background: rgba(0, 200, 255, 0.25);
+}
+.block-overlay.number,
+.block-overlay.page_number {
+  background: rgba(255, 170, 0, 0.3);
+}
+.block-overlay.abstract {
+  background: rgba(100, 200, 150, 0.25);
+}
+.block-overlay.references,
+.block-overlay.reference_list {
+  background: rgba(180, 130, 200, 0.25);
+}
+.block-overlay.footnotes,
+.block-overlay.footnote {
+  background: rgba(150, 180, 200, 0.25);
+}
+.block-overlay.algorithm {
+  background: rgba(50, 200, 200, 0.3);
+}
+.block-overlay.formula,
+.block-overlay.equation {
+  background: rgba(255, 100, 200, 0.25);
+}
+.block-overlay.formula_number {
+  background: rgba(255, 150, 180, 0.25);
+}
+.block-overlay.seal,
+.block-overlay.stamp {
+  background: rgba(255, 80, 80, 0.25);
+}
+.block-overlay.figure_title,
+.block-overlay.table_title,
+.block-overlay.caption {
+  background: rgba(200, 180, 100, 0.3);
+}
+.block-overlay.chart {
+  background: rgba(100, 180, 255, 0.25);
+}
+.block-overlay.sidebar,
+.block-overlay.sidebar_text {
+  background: rgba(180, 180, 100, 0.25);
+}
+/* Default style for unknown block types */
+.block-overlay:not([class*=" "]):not(.text):not(.table):not(.picture):not(.header):not(.footer):not(.paragraph_title):not(.doc_title):not(.image):not(.figure):not(.number) {
+  background: rgba(150, 150, 150, 0.25);
+}
 
 /* Highlighted state - show border */
 .block-overlay.highlighted {
@@ -1097,6 +1198,118 @@ body {
   border: 2px solid #ff6464;
   background: rgba(255, 100, 100, 0.4);
   box-shadow: 0 0 12px rgba(255, 100, 100, 0.6);
+}
+.block-overlay.highlighted.image,
+.block-overlay.highlighted.figure,
+.block-overlay.highlighted.picture {
+  border: 2px solid #00c8ff;
+  background: rgba(0, 200, 255, 0.35);
+  box-shadow: 0 0 12px rgba(0, 200, 255, 0.6);
+}
+.block-overlay.highlighted.number,
+.block-overlay.highlighted.page_number {
+  border: 2px solid #ffaa00;
+  background: rgba(255, 170, 0, 0.4);
+  box-shadow: 0 0 12px rgba(255, 170, 0, 0.6);
+}
+.block-overlay.highlighted.abstract {
+  border: 2px solid #64c896;
+  background: rgba(100, 200, 150, 0.35);
+  box-shadow: 0 0 12px rgba(100, 200, 150, 0.6);
+}
+.block-overlay.highlighted.references,
+.block-overlay.highlighted.reference_list {
+  border: 2px solid #b482c8;
+  background: rgba(180, 130, 200, 0.35);
+  box-shadow: 0 0 12px rgba(180, 130, 200, 0.6);
+}
+.block-overlay.highlighted.footnotes,
+.block-overlay.highlighted.footnote {
+  border: 2px solid #96b4c8;
+  background: rgba(150, 180, 200, 0.35);
+  box-shadow: 0 0 12px rgba(150, 180, 200, 0.6);
+}
+.block-overlay.highlighted.algorithm {
+  border: 2px solid #32c8c8;
+  background: rgba(50, 200, 200, 0.4);
+  box-shadow: 0 0 12px rgba(50, 200, 200, 0.6);
+}
+.block-overlay.highlighted.formula,
+.block-overlay.highlighted.equation {
+  border: 2px solid #ff64c8;
+  background: rgba(255, 100, 200, 0.35);
+  box-shadow: 0 0 12px rgba(255, 100, 200, 0.6);
+}
+.block-overlay.highlighted.formula_number {
+  border: 2px solid #ff96b4;
+  background: rgba(255, 150, 180, 0.35);
+  box-shadow: 0 0 12px rgba(255, 150, 180, 0.6);
+}
+.block-overlay.highlighted.seal,
+.block-overlay.highlighted.stamp {
+  border: 2px solid #ff5050;
+  background: rgba(255, 80, 80, 0.35);
+  box-shadow: 0 0 12px rgba(255, 80, 80, 0.6);
+}
+.block-overlay.highlighted.figure_title,
+.block-overlay.highlighted.table_title,
+.block-overlay.highlighted.caption {
+  border: 2px solid #c8b464;
+  background: rgba(200, 180, 100, 0.4);
+  box-shadow: 0 0 12px rgba(200, 180, 100, 0.6);
+}
+.block-overlay.highlighted.chart {
+  border: 2px solid #64b4ff;
+  background: rgba(100, 180, 255, 0.35);
+  box-shadow: 0 0 12px rgba(100, 180, 255, 0.6);
+}
+.block-overlay.highlighted.sidebar,
+.block-overlay.highlighted.sidebar_text {
+  border: 2px solid #b4b464;
+  background: rgba(180, 180, 100, 0.35);
+  box-shadow: 0 0 12px rgba(180, 180, 100, 0.6);
+}
+/* Default highlighted style for unknown block types */
+.block-overlay.highlighted {
+  border: 2px solid #969696;
+  background: rgba(150, 150, 150, 0.35);
+  box-shadow: 0 0 12px rgba(150, 150, 150, 0.6);
+}
+
+/* Model Settings Info */
+.model-settings-info {
+  display: flex;
+  flex-wrap: wrap;
+  gap: 12px;
+  padding: 12px 16px;
+  background: var(--bg-card);
+  border: 1px solid var(--border);
+  border-radius: 10px;
+  margin-bottom: 16px;
+}
+
+.model-settings-item {
+  display: flex;
+  align-items: center;
+  gap: 6px;
+  padding: 4px 10px;
+  background: var(--bg-secondary);
+  border-radius: 6px;
+  font-size: 12px;
+}
+
+.model-settings-label {
+  color: var(--text-muted);
+  font-weight: 500;
+}
+
+.model-settings-value {
+  color: var(--text-primary);
+  font-weight: 600;
+}
+
+.model-settings-enabled {
+  color: var(--success);
 }
 
 /* Result Content Panel */
@@ -1230,6 +1443,94 @@ body {
   color: #ffdd00;
   border-color: rgba(255, 221, 0, 0.3);
   text-shadow: 0 0 8px rgba(255, 221, 0, 0.5);
+}
+.block-label.doc_title {
+  background: rgba(255, 100, 100, 0.15);
+  color: #ff6464;
+  border-color: rgba(255, 100, 100, 0.3);
+  text-shadow: 0 0 8px rgba(255, 100, 100, 0.5);
+}
+.block-label.image,
+.block-label.figure,
+.block-label.picture {
+  background: rgba(0, 200, 255, 0.15);
+  color: #00c8ff;
+  border-color: rgba(0, 200, 255, 0.3);
+  text-shadow: 0 0 8px rgba(0, 200, 255, 0.5);
+}
+.block-label.number,
+.block-label.page_number {
+  background: rgba(255, 170, 0, 0.15);
+  color: #ffaa00;
+  border-color: rgba(255, 170, 0, 0.3);
+  text-shadow: 0 0 8px rgba(255, 170, 0, 0.5);
+}
+.block-label.abstract {
+  background: rgba(100, 200, 150, 0.15);
+  color: #64c896;
+  border-color: rgba(100, 200, 150, 0.3);
+  text-shadow: 0 0 8px rgba(100, 200, 150, 0.5);
+}
+.block-label.references,
+.block-label.reference_list {
+  background: rgba(180, 130, 200, 0.15);
+  color: #b482c8;
+  border-color: rgba(180, 130, 200, 0.3);
+  text-shadow: 0 0 8px rgba(180, 130, 200, 0.5);
+}
+.block-label.footnotes,
+.block-label.footnote {
+  background: rgba(150, 180, 200, 0.15);
+  color: #96b4c8;
+  border-color: rgba(150, 180, 200, 0.3);
+  text-shadow: 0 0 8px rgba(150, 180, 200, 0.5);
+}
+.block-label.algorithm {
+  background: rgba(50, 200, 200, 0.15);
+  color: #32c8c8;
+  border-color: rgba(50, 200, 200, 0.3);
+  text-shadow: 0 0 8px rgba(50, 200, 200, 0.5);
+}
+.block-label.formula,
+.block-label.equation {
+  background: rgba(255, 100, 200, 0.15);
+  color: #ff64c8;
+  border-color: rgba(255, 100, 200, 0.3);
+  text-shadow: 0 0 8px rgba(255, 100, 200, 0.5);
+}
+.block-label.formula_number {
+  background: rgba(255, 150, 180, 0.15);
+  color: #ff96b4;
+  border-color: rgba(255, 150, 180, 0.3);
+  text-shadow: 0 0 8px rgba(255, 150, 180, 0.5);
+}
+.block-label.seal,
+.block-label.stamp {
+  background: rgba(255, 80, 80, 0.15);
+  color: #ff5050;
+  border-color: rgba(255, 80, 80, 0.3);
+  text-shadow: 0 0 8px rgba(255, 80, 80, 0.5);
+}
+.block-label.figure_title,
+.block-label.table_title,
+.block-label.caption {
+  background: rgba(200, 180, 100, 0.15);
+  color: #c8b464;
+  border-color: rgba(200, 180, 100, 0.3);
+  text-shadow: 0 0 8px rgba(200, 180, 100, 0.5);
+}
+.block-label.chart {
+  background: rgba(100, 180, 255, 0.15);
+  color: #64b4ff;
+  border-color: rgba(100, 180, 255, 0.3);
+  text-shadow: 0 0 8px rgba(100, 180, 255, 0.5);
+}
+.block-label.sidebar,
+.block-label.sidebar_text {
+  background: rgba(180, 180, 100, 0.15);
+  color: #b4b464;
+  border-color: rgba(180, 180, 100, 0.3);
+  text-shadow: 0 0 8px rgba(180, 180, 100, 0.5);
 }
 
 .block-body {

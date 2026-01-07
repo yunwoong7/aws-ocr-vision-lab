@@ -76,10 +76,18 @@ const LoaderIcon = () => (
   </svg>
 );
 
+const CloseIcon = () => (
+  <svg viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="2">
+    <line x1="18" y1="6" x2="6" y2="18" />
+    <line x1="6" y1="6" x2="18" y2="18" />
+  </svg>
+);
+
 export interface AppLayoutContext {
   jobs: OcrJob[];
   addJob: (job: OcrJob) => void;
   updateJob: (id: string, updates: Partial<OcrJob>) => void;
+  removeJob: (id: string) => void;
   replaceJobId: (oldId: string, newId: string) => void;
   currentJobId: string | null;
   setCurrentJobId: (id: string | null) => void;
@@ -94,6 +102,7 @@ export const AppLayoutContext = createContext<AppLayoutContext>({
   jobs: [],
   addJob: noop,
   updateJob: noop,
+  removeJob: noop,
   replaceJobId: noop,
   currentJobId: null,
   setCurrentJobId: noop,
@@ -124,13 +133,15 @@ const loadJobsFromStorage = (): OcrJob[] => {
 // Save jobs to localStorage
 const saveJobsToStorage = (jobs: OcrJob[]) => {
   try {
-    // Limit to 20 most recent jobs to avoid storage limits
-    const toSave = jobs.slice(0, 20);
+    // Limit to 10 most recent jobs to avoid storage limits
+    const toSave = jobs.slice(0, 10);
     localStorage.setItem(STORAGE_KEY, JSON.stringify(toSave));
   } catch (e) {
     console.error('Failed to save jobs to storage:', e);
   }
 };
+
+const MAX_JOBS_IN_MEMORY = 20;
 
 const AppLayout: React.FC<React.PropsWithChildren> = ({ children }) => {
   const { user, removeUser, signoutRedirect, clearStaleState } = useAuth();
@@ -146,7 +157,15 @@ const AppLayout: React.FC<React.PropsWithChildren> = ({ children }) => {
   }, [jobs]);
 
   const addJob = useCallback((job: OcrJob) => {
-    setJobs((prev) => [job, ...prev]);
+    setJobs((prev) => {
+      const newJobs = [job, ...prev];
+      // Limit jobs in memory and clear imageData from old jobs
+      return newJobs.slice(0, MAX_JOBS_IN_MEMORY).map((j, idx) => ({
+        ...j,
+        // Keep imageData only for 10 most recent jobs in memory
+        imageData: idx < 10 ? j.imageData : undefined,
+      }));
+    });
     setCurrentJobId(job.id);
   }, []);
 
@@ -154,6 +173,11 @@ const AppLayout: React.FC<React.PropsWithChildren> = ({ children }) => {
     setJobs((prev) =>
       prev.map((job) => (job.id === id ? { ...job, ...updates } : job)),
     );
+  }, []);
+
+  const removeJob = useCallback((id: string) => {
+    setJobs((prev) => prev.filter((job) => job.id !== id));
+    setCurrentJobId((prev) => (prev === id ? null : prev));
   }, []);
 
   const replaceJobId = useCallback((oldId: string, newId: string) => {
@@ -213,6 +237,7 @@ const AppLayout: React.FC<React.PropsWithChildren> = ({ children }) => {
         jobs,
         addJob,
         updateJob,
+        removeJob,
         replaceJobId,
         currentJobId,
         setCurrentJobId,
@@ -227,10 +252,10 @@ const AppLayout: React.FC<React.PropsWithChildren> = ({ children }) => {
             <div className="sidebar-logo">
               <img
                 src="/logo.png"
-                alt="OCR Vision Lab"
+                alt="PaddleOCR Service"
                 className="sidebar-logo-img"
               />
-              <span>OCR Vision Lab</span>
+              <span>PaddleOCR Service</span>
             </div>
           </div>
 
@@ -265,8 +290,11 @@ const AppLayout: React.FC<React.PropsWithChildren> = ({ children }) => {
                 jobs.map((job) => (
                   <div
                     key={job.id}
-                    className={`sidebar-item ${currentJobId === job.id ? 'active' : ''}`}
-                    onClick={() => setCurrentJobId(job.id)}
+                    className={`sidebar-item ${currentJobId === job.id ? 'active' : ''} ${!job.imageData ? 'no-image' : ''}`}
+                    onClick={() => job.imageData && setCurrentJobId(job.id)}
+                    style={{
+                      cursor: job.imageData ? 'pointer' : 'not-allowed',
+                    }}
                   >
                     <span className="sidebar-item-icon">
                       {job.status === 'processing' ? (
@@ -276,12 +304,35 @@ const AppLayout: React.FC<React.PropsWithChildren> = ({ children }) => {
                       )}
                     </span>
                     <span className="sidebar-item-text">{job.filename}</span>
+                    <span className="sidebar-item-model">
+                      {job.model === 'paddleocr-vl'
+                        ? 'VL'
+                        : job.model === 'pp-ocrv5'
+                          ? 'v5'
+                          : 'Struct'}
+                    </span>
                     <span className="sidebar-item-time">
                       {formatTime(job.createdAt)}
                     </span>
+                    <button
+                      className="sidebar-item-delete"
+                      onClick={(e) => {
+                        e.stopPropagation();
+                        removeJob(job.id);
+                      }}
+                      title="Delete"
+                    >
+                      <CloseIcon />
+                    </button>
                   </div>
                 ))
               )}
+            </div>
+
+            {/* Storage Notice */}
+            <div className="sidebar-notice">
+              Up to 10 recent jobs stored locally. Clearing browser cache will
+              remove all history.
             </div>
           </div>
 

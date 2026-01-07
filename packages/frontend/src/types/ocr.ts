@@ -319,6 +319,7 @@ export interface OcrJob {
   id: string;
   filename: string;
   model: OcrModel;
+  modelOptions?: ModelOptions;
   status: 'processing' | 'completed' | 'failed';
   createdAt: Date;
   result?: OcrResult;
