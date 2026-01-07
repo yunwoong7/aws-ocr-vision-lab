@@ -207,14 +207,15 @@ Resources:
 
                 # Get outputs
                 - |
-                  FRONTEND_URL=$(aws cloudformation describe-stacks \
+                  FRONTEND_DOMAIN=$(aws cloudformation describe-stacks \
                     --stack-name PaddleOCR-Application \
-                    --query 'Stacks[0].Outputs[?OutputKey==`FrontendUrl`].OutputValue' \
+                    --query 'Stacks[0].Outputs[?contains(OutputKey,`DistributionDomainName`)].OutputValue' \
                     --output text 2>/dev/null || echo "")
+                  FRONTEND_URL="https://${FRONTEND_DOMAIN}"
 
                   USER_POOL_ID=$(aws cloudformation describe-stacks \
                     --stack-name PaddleOCR-Application \
-                    --query 'Stacks[0].Outputs[?OutputKey==`UserPoolId`].OutputValue' \
+                    --query 'Stacks[0].Outputs[?contains(OutputKey,`UserPoolId`)].OutputValue' \
                     --output text 2>/dev/null || echo "")
 
                   # Get temporary password from Cognito

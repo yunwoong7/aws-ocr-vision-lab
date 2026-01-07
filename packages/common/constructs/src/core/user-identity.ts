@@ -6,11 +6,12 @@ import { CfnOutput, Duration, Lazy, Stack } from 'aws-cdk-lib';
 import {
   AccountRecovery,
   CfnManagedLoginBranding,
-  CfnUserPoolDomain,
+  ManagedLoginVersion,
   Mfa,
   OAuthScope,
   UserPool,
   UserPoolClient,
+  UserPoolDomain,
 } from 'aws-cdk-lib/aws-cognito';
 import { Construct } from 'constructs';
 import { RuntimeConfig } from './runtime-config.js';
@@ -26,7 +27,7 @@ export class UserIdentity extends Construct {
   public readonly identityPool: IdentityPool;
   public readonly userPool: UserPool;
   public readonly userPoolClient: UserPoolClient;
-  public readonly userPoolDomain: CfnUserPoolDomain;
+  public readonly userPoolDomain: UserPoolDomain;
 
   constructor(scope: Construct, id: string) {
     super(scope, id);
@@ -74,7 +75,7 @@ export class UserIdentity extends Construct {
 
   private createUserPool = () =>
     new UserPool(this, 'UserPool', {
-      deletionProtection: true,
+      deletionProtection: false,
       passwordPolicy: {
         minLength: 8,
         requireLowercase: true,
@@ -105,9 +106,11 @@ export class UserIdentity extends Construct {
     });
 
   private createUserPoolDomain = (userPool: UserPool) =>
-    new CfnUserPoolDomain(this, 'UserPoolDomain', {
-      domain: `ocr-lab-${Stack.of(this).account}`,
-      userPoolId: userPool.userPoolId,
+    userPool.addDomain('Domain', {
+      cognitoDomain: {
+        domainPrefix: `ocr-lab-${Stack.of(this).account}`,
+      },
+      managedLoginVersion: ManagedLoginVersion.NEWER_MANAGED_LOGIN,
     });
 
   private createUserPoolClient = (userPool: UserPool) => {
@@ -161,7 +164,7 @@ export class UserIdentity extends Construct {
   private createManagedLoginBranding = (
     userPool: UserPool,
     userPoolClient: UserPoolClient,
-    userPoolDomain: CfnUserPoolDomain,
+    userPoolDomain: UserPoolDomain,
   ) => {
     new CfnManagedLoginBranding(this, 'ManagedLoginBranding', {
       userPoolId: userPool.userPoolId,
