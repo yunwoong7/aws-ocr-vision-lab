@@ -215,26 +215,30 @@ Resources:
 
                   USER_POOL_ID=$(aws cloudformation describe-stacks \
                     --stack-name PaddleOCR-Application \
-                    --query 'Stacks[0].Outputs[?ends_with(OutputKey,`UserPoolId`)].OutputValue' \
+                    --query "Stacks[0].Outputs[?contains(OutputKey,'UserPoolId') && !contains(OutputKey,'Client')].OutputValue" \
                     --output text 2>/dev/null | awk '{print $1}')
 
                   # Get temporary password from Cognito
                   if [ -n "$USER_POOL_ID" ]; then
                     ADMIN_USERNAME=$(echo "$ADMIN_USER_EMAIL" | cut -d'@' -f1)
-                    TEMP_PASSWORD=$(aws cognito-idp admin-create-user \
-                      --user-pool-id $USER_POOL_ID \
-                      --username "$ADMIN_USERNAME" \
-                      --user-attributes Name=email,Value="$ADMIN_USER_EMAIL" Name=email_verified,Value=true Name=given_name,Value=Admin Name=family_name,Value=User \
-                      --temporary-password "TempPass123!" \
-                      --message-action SUPPRESS \
-                      --query 'User.Username' \
-                      --output text 2>/dev/null || echo "User already exists")
 
-                    if [ "$TEMP_PASSWORD" = "User already exists" ]; then
-                      echo "Admin user already exists"
-                      TEMP_PASSWORD="(existing user - check email or reset password)"
-                    else
+                    # Check if user exists
+                    USER_EXISTS=$(aws cognito-idp admin-get-user \
+                      --user-pool-id $USER_POOL_ID \
+                      --username "$ADMIN_USERNAME" 2>/dev/null && echo "yes" || echo "no")
+
+                    if [ "$USER_EXISTS" = "no" ]; then
+                      aws cognito-idp admin-create-user \
+                        --user-pool-id $USER_POOL_ID \
+                        --username "$ADMIN_USERNAME" \
+                        --user-attributes Name=email,Value="$ADMIN_USER_EMAIL" Name=email_verified,Value=true Name=given_name,Value=Admin Name=family_name,Value=User \
+                        --temporary-password "TempPass123!" \
+                        --message-action SUPPRESS
                       TEMP_PASSWORD="TempPass123!"
+                      echo "Admin user created: $ADMIN_USERNAME"
+                    else
+                      echo "Admin user already exists: $ADMIN_USERNAME"
+                      TEMP_PASSWORD="(existing user - use current password)"
                     fi
                   fi
 

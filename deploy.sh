@@ -234,10 +234,16 @@ logGroupName=$(echo $buildDetail | jq -r '.groupName')
 logStreamName=$(echo $buildDetail | jq -r '.streamName')
 
 # Extract URLs from logs
-logs=$(aws logs get-log-events --log-group-name $logGroupName --log-stream-name $logStreamName --start-from-head --limit 1000)
+logs=$(aws logs get-log-events --log-group-name $logGroupName --log-stream-name $logStreamName --start-from-head --limit 1000 --query 'events[*].message' --output text)
 
-frontendUrl=$(echo "$logs" | grep -o 'FrontendURL = [^ ]*' | cut -d' ' -f3 | tr -d '\n,' | head -1)
-cognitoPassword=$(echo "$logs" | grep -o 'TemporaryPassword = [^ ]*' | cut -d' ' -f3 | tr -d '\n,' | head -1)
+frontendUrl=$(echo "$logs" | grep -oP 'FrontendURL = \K[^\s]+' | head -1)
+cognitoPassword=$(echo "$logs" | grep -oP 'TemporaryPassword = \K[^\s]+' | head -1)
+
+# Fallback if empty
+if [[ -z "$frontendUrl" ]]; then
+  frontendUrl=$(aws cloudformation describe-stacks --stack-name PaddleOCR-Application --query 'Stacks[0].Outputs[?contains(OutputKey,`DistributionDomainName`)].OutputValue' --output text 2>/dev/null)
+  frontendUrl="https://$frontendUrl"
+fi
 
 echo ""
 echo "  Application URL: $frontendUrl"
