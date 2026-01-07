@@ -141,6 +141,10 @@ Resources:
               commands:
                 - cd /tmp/aws-ocr-vision-lab
 
+                # Build common-constructs first (required for path alias resolution)
+                - echo "Building dependencies..."
+                - pnpm nx run @aws-ocr-vision-lab/common-constructs:compile
+
                 # Bootstrap CDK if needed
                 - |
                   STACK_STATUS=$(aws cloudformation describe-stacks --stack-name CDKToolkit --query 'Stacks[0].StackStatus' --output text 2>/dev/null || echo "STACK_NOT_FOUND")
