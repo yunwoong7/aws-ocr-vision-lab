@@ -81,6 +81,7 @@ export class OcrImageBuilder extends Construct {
       repositoryName,
       removalPolicy: RemovalPolicy.DESTROY,
       emptyOnDelete: true,
+      imageScanOnPush: true,
     });
 
     this.imageUri = `${this.repository.repositoryUri}:latest`;

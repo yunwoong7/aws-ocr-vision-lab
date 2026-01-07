@@ -6,6 +6,15 @@ skip-check:
   - CKV_AWS_117 # Lambda functions in VPC
   - CKV_AWS_173 # Encrypt Lambda environment variables
   - CKV_AWS_272 # Code signing
+  # SageMaker suppressions
+  - CKV_AWS_370 # Network isolation - model needs to download from external sources
+  # API Gateway suppressions
+  - CKV_AWS_120 # Caching - not suitable for OCR API (each request is unique)
+  # CloudWatch suppressions
+  - CKV_AWS_158 # KMS encryption for LogGroup - adds cost for sample project
+  # ECR suppressions
+  - CKV_AWS_136 # KMS encryption - adds cost for sample project
+  - CKV_AWS_51 # Immutable tags - need to reuse 'latest' tag
 output:
   - cli
   - json

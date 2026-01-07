@@ -7,6 +7,7 @@ import {
   HttpMethods,
 } from 'aws-cdk-lib/aws-s3';
 import { Construct } from 'constructs';
+import { suppressRules } from './checkov.js';
 
 export interface OcrBucketProps {
   removalPolicy?: RemovalPolicy;
@@ -18,12 +19,37 @@ export class OcrBucket extends Construct {
   constructor(scope: Construct, id: string, props: OcrBucketProps = {}) {
     super(scope, id);
 
+    // Access log bucket
+    const accessLogBucket = new Bucket(this, 'AccessLogBucket', {
+      encryption: BucketEncryption.S3_MANAGED,
+      blockPublicAccess: BlockPublicAccess.BLOCK_ALL,
+      objectOwnership: ObjectOwnership.BUCKET_OWNER_PREFERRED,
+      enforceSSL: true,
+      removalPolicy: props.removalPolicy ?? RemovalPolicy.DESTROY,
+      autoDeleteObjects: props.removalPolicy === RemovalPolicy.DESTROY,
+      lifecycleRules: [
+        {
+          id: 'DeleteAccessLogsAfter90Days',
+          expiration: Duration.days(90),
+        },
+      ],
+    });
+
+    // Suppress checkov rules for access log bucket
+    suppressRules(
+      accessLogBucket,
+      ['CKV_AWS_18', 'CKV_AWS_21'],
+      'Access log bucket does not need its own access logging or versioning',
+    );
+
     this.bucket = new Bucket(this, 'OcrBucket', {
       encryption: BucketEncryption.S3_MANAGED,
       blockPublicAccess: BlockPublicAccess.BLOCK_ALL,
       objectOwnership: ObjectOwnership.BUCKET_OWNER_ENFORCED,
       enforceSSL: true,
-      versioned: false,
+      versioned: true,
+      serverAccessLogsBucket: accessLogBucket,
+      serverAccessLogsPrefix: 'ocr-bucket-logs/',
       removalPolicy: props.removalPolicy ?? RemovalPolicy.DESTROY,
       autoDeleteObjects: props.removalPolicy === RemovalPolicy.DESTROY,
       lifecycleRules: [
