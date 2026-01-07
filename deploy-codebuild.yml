@@ -215,15 +215,16 @@ Resources:
 
                   USER_POOL_ID=$(aws cloudformation describe-stacks \
                     --stack-name PaddleOCR-Application \
-                    --query 'Stacks[0].Outputs[?contains(OutputKey,`UserPoolId`)].OutputValue' \
-                    --output text 2>/dev/null || echo "")
+                    --query 'Stacks[0].Outputs[?ends_with(OutputKey,`UserPoolId`)].OutputValue' \
+                    --output text 2>/dev/null | awk '{print $1}')
 
                   # Get temporary password from Cognito
                   if [ -n "$USER_POOL_ID" ]; then
+                    ADMIN_USERNAME=$(echo "$ADMIN_USER_EMAIL" | cut -d'@' -f1)
                     TEMP_PASSWORD=$(aws cognito-idp admin-create-user \
                       --user-pool-id $USER_POOL_ID \
-                      --username "$ADMIN_USER_EMAIL" \
-                      --user-attributes Name=email,Value="$ADMIN_USER_EMAIL" Name=email_verified,Value=true \
+                      --username "$ADMIN_USERNAME" \
+                      --user-attributes Name=email,Value="$ADMIN_USER_EMAIL" Name=email_verified,Value=true Name=given_name,Value=Admin Name=family_name,Value=User \
                       --temporary-password "TempPass123!" \
                       --message-action SUPPRESS \
                       --query 'User.Username' \
