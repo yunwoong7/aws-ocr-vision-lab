@@ -7,7 +7,6 @@ import {
   AccountRecovery,
   CfnManagedLoginBranding,
   CfnUserPoolDomain,
-  FeaturePlan,
   Mfa,
   OAuthScope,
   UserPool,
@@ -84,9 +83,7 @@ export class UserIdentity extends Construct {
         requireSymbols: true,
         tempPasswordValidity: Duration.days(3),
       },
-      mfa: Mfa.REQUIRED,
-      featurePlan: FeaturePlan.PLUS,
-      mfaSecondFactor: { sms: true, otp: true },
+      mfa: Mfa.OFF,
       signInCaseSensitive: false,
       signInAliases: { username: true, email: true },
       accountRecovery: AccountRecovery.EMAIL_ONLY,
@@ -109,9 +106,8 @@ export class UserIdentity extends Construct {
 
   private createUserPoolDomain = (userPool: UserPool) =>
     new CfnUserPoolDomain(this, 'UserPoolDomain', {
-      domain: `aws-ocr-vision-lab-${Stack.of(this).account}`,
+      domain: `ocr-lab-${Stack.of(this).account}`,
       userPoolId: userPool.userPoolId,
-      managedLoginVersion: 2,
     });
 
   private createUserPoolClient = (userPool: UserPool) => {
