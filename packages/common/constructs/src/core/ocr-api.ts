@@ -1,4 +1,4 @@
-import { Duration, CfnOutput, Stack, Fn, RemovalPolicy } from 'aws-cdk-lib';
+import { Duration, CfnOutput, Stack, Fn } from 'aws-cdk-lib';
 import {
   RestApi,
   LambdaIntegration,
@@ -7,11 +7,7 @@ import {
   Cors,
   GatewayResponse,
   ResponseType,
-  AccessLogFormat,
-  LogGroupLogDestination,
-  MethodLoggingLevel,
 } from 'aws-cdk-lib/aws-apigateway';
-import { LogGroup, RetentionDays } from 'aws-cdk-lib/aws-logs';
 import { Function, Runtime, Architecture, Code } from 'aws-cdk-lib/aws-lambda';
 import { UserPool } from 'aws-cdk-lib/aws-cognito';
 import { Bucket } from 'aws-cdk-lib/aws-s3';
@@ -85,12 +81,6 @@ export class OcrApi extends Construct {
       }),
     );
 
-    // CloudWatch Log Group for API Gateway access logs
-    const apiLogGroup = new LogGroup(this, 'ApiAccessLogs', {
-      retention: RetentionDays.ONE_MONTH,
-      removalPolicy: RemovalPolicy.DESTROY,
-    });
-
     // API Gateway
     this.api = new RestApi(this, 'Api', {
       restApiName: 'OCR API',
@@ -108,9 +98,6 @@ export class OcrApi extends Construct {
       },
       deployOptions: {
         tracingEnabled: true, // X-Ray Tracing
-        accessLogDestination: new LogGroupLogDestination(apiLogGroup),
-        accessLogFormat: AccessLogFormat.jsonWithStandardFields(),
-        loggingLevel: MethodLoggingLevel.INFO,
       },
     });
 
