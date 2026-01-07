@@ -146,12 +146,19 @@ Resources:
                 - pnpm nx run @aws-ocr-vision-lab/common-constructs:compile
                 - pnpm nx run @aws-ocr-vision-lab/frontend:build
 
-                # Bootstrap CDK if needed
+                # Bootstrap CDK if needed (both main region and us-east-1 for WAF/CloudFront)
                 - |
                   STACK_STATUS=$(aws cloudformation describe-stacks --stack-name CDKToolkit --query 'Stacks[0].StackStatus' --output text 2>/dev/null || echo "STACK_NOT_FOUND")
                   if [ "$STACK_STATUS" = "STACK_NOT_FOUND" ] || [ "$STACK_STATUS" = "ROLLBACK_COMPLETE" ]; then
-                    echo "Bootstrapping CDK..."
+                    echo "Bootstrapping CDK in $AWS_DEFAULT_REGION..."
                     npx cdk bootstrap aws://$AWS_ACCOUNT_ID/$AWS_DEFAULT_REGION --require-approval never
+                  fi
+
+                  # Bootstrap us-east-1 for WAF/CloudFront (required for cross-region resources)
+                  US_EAST_STATUS=$(aws cloudformation describe-stacks --stack-name CDKToolkit --region us-east-1 --query 'Stacks[0].StackStatus' --output text 2>/dev/null || echo "STACK_NOT_FOUND")
+                  if [ "$US_EAST_STATUS" = "STACK_NOT_FOUND" ] || [ "$US_EAST_STATUS" = "ROLLBACK_COMPLETE" ]; then
+                    echo "Bootstrapping CDK in us-east-1 for WAF/CloudFront..."
+                    npx cdk bootstrap aws://$AWS_ACCOUNT_ID/us-east-1 --require-approval never
                   fi
 
                 # Deploy InfraStack (S3, ECR, CodeBuild for Docker)
