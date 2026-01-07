@@ -141,9 +141,10 @@ Resources:
               commands:
                 - cd /tmp/aws-ocr-vision-lab
 
-                # Build common-constructs first (required for path alias resolution)
+                # Build all dependencies (required for CDK synthesis)
                 - echo "Building dependencies..."
                 - pnpm nx run @aws-ocr-vision-lab/common-constructs:compile
+                - pnpm nx run @aws-ocr-vision-lab/frontend:build
 
                 # Bootstrap CDK if needed
                 - |
