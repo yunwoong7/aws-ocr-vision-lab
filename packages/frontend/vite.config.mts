@@ -40,16 +40,6 @@ export default defineConfig(() => ({
     commonjsOptions: {
       transformMixedEsModules: true,
     },
-    chunkSizeWarningLimit: 1000,
-    rollupOptions: {
-      output: {
-        manualChunks: {
-          'pdf': ['pdfjs-dist'],
-          'react-vendor': ['react', 'react-dom'],
-          'markdown': ['react-markdown', 'remark-breaks', 'rehype-raw'],
-        },
-      },
-    },
   },
   test: {
     name: '@aws-ocr-vision-lab/frontend',

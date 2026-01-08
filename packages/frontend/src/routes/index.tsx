@@ -10,9 +10,54 @@ import { useAuth } from 'react-oidc-context';
 import ReactMarkdown from 'react-markdown';
 import remarkBreaks from 'remark-breaks';
 import rehypeRaw from 'rehype-raw';
-import * as pdfjsLib from 'pdfjs-dist';
 import { useRuntimeConfig } from '../hooks/useRuntimeConfig';
+
 import { AppLayoutContext } from '../components/AppLayout';
+
+// PDF.js CDN version - loaded at runtime, not bundled
+const PDFJS_VERSION = '4.4.168';
+const PDFJS_CDN = `https://cdn.jsdelivr.net/npm/pdfjs-dist@${PDFJS_VERSION}/build`;
+
+// eslint-disable-next-line @typescript-eslint/no-explicit-any
+let pdfjsLibPromise: Promise<any> | null = null;
+
+// eslint-disable-next-line @typescript-eslint/no-explicit-any
+async function loadPdfJs(): Promise<any> {
+  if (pdfjsLibPromise) return pdfjsLibPromise;
+
+  pdfjsLibPromise = new Promise((resolve, reject) => {
+    // Check if already loaded
+    // eslint-disable-next-line @typescript-eslint/no-explicit-any
+    if ((window as any).pdfjsLib) {
+      // eslint-disable-next-line @typescript-eslint/no-explicit-any
+      resolve((window as any).pdfjsLib);
+      return;
+    }
+
+    const script = document.createElement('script');
+    script.src = `${PDFJS_CDN}/pdf.min.mjs`;
+    script.type = 'module';
+    script.onload = () => {
+      // Wait for the module to be available
+      const checkLib = () => {
+        // eslint-disable-next-line @typescript-eslint/no-explicit-any
+        if ((window as any).pdfjsLib) {
+          // eslint-disable-next-line @typescript-eslint/no-explicit-any
+          const lib = (window as any).pdfjsLib;
+          lib.GlobalWorkerOptions.workerSrc = `${PDFJS_CDN}/pdf.worker.min.mjs`;
+          resolve(lib);
+        } else {
+          setTimeout(checkLib, 50);
+        }
+      };
+      checkLib();
+    };
+    script.onerror = () => reject(new Error('Failed to load PDF.js'));
+    document.head.appendChild(script);
+  });
+
+  return pdfjsLibPromise;
+}
 import DocumentEditor from '../components/DocumentEditor';
 import {
   OcrModel,
@@ -34,15 +79,15 @@ import {
   getV5Bbox,
 } from '../types/ocr';
 
-// Set up PDF.js worker - use CDN for reliability
-pdfjsLib.GlobalWorkerOptions.workerSrc = `https://cdn.jsdelivr.net/npm/pdfjs-dist@${pdfjsLib.version}/build/pdf.worker.min.mjs`;
-
 // Helper function to render PDF page to image
 async function renderPdfToImage(
   arrayBuffer: ArrayBuffer,
   pageNumber: number = 1,
 ): Promise<{ dataUrl: string | null; totalPages: number }> {
   try {
+    // Load PDF.js from CDN
+    const pdfjsLib = await loadPdfJs();
+
     // Make a copy of the ArrayBuffer to avoid "detached ArrayBuffer" error
     const arrayBufferCopy = arrayBuffer.slice(0);
     const loadingTask = pdfjsLib.getDocument({
