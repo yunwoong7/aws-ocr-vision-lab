@@ -53,13 +53,6 @@ export class UserIdentity extends Construct {
       userPoolWebClientId: this.userPoolClient.userPoolClientId,
     };
 
-    suppressRules(
-      this.userPool,
-      ['CKV_AWS_111'],
-      'SMS Role requires wildcard resource',
-      (c) => c.node.path.includes('/smsRole/'),
-    );
-
     new CfnOutput(this, `${id}-UserPoolId`, {
       value: this.userPool.userPoolId,
     });
@@ -97,11 +90,9 @@ export class UserIdentity extends Construct {
       },
       autoVerify: {
         email: true,
-        phone: true,
       },
       keepOriginal: {
         email: true,
-        phone: true,
       },
     });
 

@@ -85,6 +85,7 @@ const CloseIcon = () => (
 
 export interface AppLayoutContext {
   jobs: OcrJob[];
+  setJobs: (jobs: OcrJob[]) => void;
   addJob: (job: OcrJob) => void;
   updateJob: (id: string, updates: Partial<OcrJob>) => void;
   removeJob: (id: string) => void;
@@ -93,13 +94,18 @@ export interface AppLayoutContext {
   setCurrentJobId: (id: string | null) => void;
   onNewJob: () => void;
   setOnNewJob: (handler: () => void) => void;
+  // Callback for deleting S3 files when a job is deleted
+  onDeleteS3Files: (s3Key: string, jobId: string) => Promise<void>;
+  setOnDeleteS3Files: (handler: (s3Key: string, jobId: string) => Promise<void>) => void;
 }
 
 // eslint-disable-next-line @typescript-eslint/no-empty-function
 const noop = () => {};
+const noopAsync = async () => {};
 
 export const AppLayoutContext = createContext<AppLayoutContext>({
   jobs: [],
+  setJobs: noop,
   addJob: noop,
   updateJob: noop,
   removeJob: noop,
@@ -108,80 +114,55 @@ export const AppLayoutContext = createContext<AppLayoutContext>({
   setCurrentJobId: noop,
   onNewJob: noop,
   setOnNewJob: noop,
+  onDeleteS3Files: noopAsync,
+  setOnDeleteS3Files: noop,
 });
-
-const STORAGE_KEY = 'ocr-vision-lab-jobs';
-
-// Load jobs from localStorage
-const loadJobsFromStorage = (): OcrJob[] => {
-  try {
-    const stored = localStorage.getItem(STORAGE_KEY);
-    if (stored) {
-      const parsed = JSON.parse(stored);
-      // Convert date strings back to Date objects
-      return parsed.map((job: OcrJob) => ({
-        ...job,
-        createdAt: new Date(job.createdAt),
-      }));
-    }
-  } catch (e) {
-    console.error('Failed to load jobs from storage:', e);
-  }
-  return [];
-};
-
-// Save jobs to localStorage
-const saveJobsToStorage = (jobs: OcrJob[]) => {
-  try {
-    // Limit to 10 most recent jobs to avoid storage limits
-    const toSave = jobs.slice(0, 10);
-    localStorage.setItem(STORAGE_KEY, JSON.stringify(toSave));
-  } catch (e) {
-    console.error('Failed to save jobs to storage:', e);
-  }
-};
-
-const MAX_JOBS_IN_MEMORY = 20;
 
 const AppLayout: React.FC<React.PropsWithChildren> = ({ children }) => {
   const { user, removeUser, signoutRedirect, clearStaleState } = useAuth();
-  const [jobs, setJobs] = useState<OcrJob[]>(() => loadJobsFromStorage());
+  const [jobs, setJobsState] = useState<OcrJob[]>([]);
   const [currentJobId, setCurrentJobId] = useState<string | null>(null);
   const [onNewJobHandler, setOnNewJobHandler] = useState<() => void>(
     () => noop,
   );
+  const [onDeleteS3FilesHandler, setOnDeleteS3FilesHandler] = useState<
+    (s3Key: string, jobId: string) => Promise<void>
+  >(() => noopAsync);
 
-  // Save jobs to localStorage whenever they change
-  useEffect(() => {
-    saveJobsToStorage(jobs);
-  }, [jobs]);
+  // Wrapper to set jobs from API
+  const setJobs = useCallback((newJobs: OcrJob[]) => {
+    setJobsState(newJobs);
+  }, []);
 
   const addJob = useCallback((job: OcrJob) => {
-    setJobs((prev) => {
-      const newJobs = [job, ...prev];
-      // Limit jobs in memory and clear imageData from old jobs
-      return newJobs.slice(0, MAX_JOBS_IN_MEMORY).map((j, idx) => ({
-        ...j,
-        // Keep imageData only for 10 most recent jobs in memory
-        imageData: idx < 10 ? j.imageData : undefined,
-      }));
-    });
+    setJobsState((prev) => [job, ...prev]);
     setCurrentJobId(job.id);
   }, []);
 
   const updateJob = useCallback((id: string, updates: Partial<OcrJob>) => {
-    setJobs((prev) =>
+    setJobsState((prev) =>
       prev.map((job) => (job.id === id ? { ...job, ...updates } : job)),
     );
   }, []);
 
-  const removeJob = useCallback((id: string) => {
-    setJobs((prev) => prev.filter((job) => job.id !== id));
-    setCurrentJobId((prev) => (prev === id ? null : prev));
-  }, []);
+  const removeJob = useCallback(
+    (id: string) => {
+      // Find the job to get s3Key before removing
+      const job = jobs.find((j) => j.id === id);
+      if (job?.s3Key) {
+        // Delete S3 files asynchronously (pass both s3Key and jobId)
+        onDeleteS3FilesHandler(job.s3Key, job.id).catch((err) => {
+          console.error('Failed to delete S3 files:', err);
+        });
+      }
+      setJobsState((prev) => prev.filter((job) => job.id !== id));
+      setCurrentJobId((prev) => (prev === id ? null : prev));
+    },
+    [jobs, onDeleteS3FilesHandler],
+  );
 
   const replaceJobId = useCallback((oldId: string, newId: string) => {
-    setJobs((prev) =>
+    setJobsState((prev) =>
       prev.map((job) => (job.id === oldId ? { ...job, id: newId } : job)),
     );
     setCurrentJobId((prev) => (prev === oldId ? newId : prev));
@@ -235,6 +216,7 @@ const AppLayout: React.FC<React.PropsWithChildren> = ({ children }) => {
     <AppLayoutContext.Provider
       value={{
         jobs,
+        setJobs,
         addJob,
         updateJob,
         removeJob,
@@ -243,6 +225,8 @@ const AppLayout: React.FC<React.PropsWithChildren> = ({ children }) => {
         setCurrentJobId,
         onNewJob: handleNewJob,
         setOnNewJob: (handler) => setOnNewJobHandler(() => handler),
+        onDeleteS3Files: onDeleteS3FilesHandler,
+        setOnDeleteS3Files: (handler) => setOnDeleteS3FilesHandler(() => handler),
       }}
     >
       <div className="app-layout">
@@ -287,13 +271,16 @@ const AppLayout: React.FC<React.PropsWithChildren> = ({ children }) => {
                   No jobs yet
                 </div>
               ) : (
-                jobs.map((job) => (
+                jobs.map((job) => {
+                  // Check if job is accessible (has s3Key and image is available in S3)
+                  const isAccessible = job.s3Key && job.imageAvailable !== false;
+                  return (
                   <div
                     key={job.id}
-                    className={`sidebar-item ${currentJobId === job.id ? 'active' : ''} ${!job.imageData ? 'no-image' : ''}`}
-                    onClick={() => job.imageData && setCurrentJobId(job.id)}
+                    className={`sidebar-item ${currentJobId === job.id ? 'active' : ''} ${!isAccessible ? 'no-image' : ''}`}
+                    onClick={() => isAccessible && setCurrentJobId(job.id)}
                     style={{
-                      cursor: job.imageData ? 'pointer' : 'not-allowed',
+                      cursor: isAccessible ? 'pointer' : 'not-allowed',
                     }}
                   >
                     <span className="sidebar-item-icon">
@@ -325,14 +312,14 @@ const AppLayout: React.FC<React.PropsWithChildren> = ({ children }) => {
                       <CloseIcon />
                     </button>
                   </div>
-                ))
+                  );
+                })
               )}
             </div>
 
             {/* Storage Notice */}
             <div className="sidebar-notice">
-              Up to 10 recent jobs stored locally. Clearing browser cache will
-              remove all history.
+              Jobs stored in cloud. Images and results expire after 30 days.
             </div>
           </div>
 

@@ -269,9 +269,51 @@ export interface OcrV5ResultData {
   input_path: string;
   page_index: number | null;
   rec_texts: string[];
-  rec_boxes: number[][]; // [[x1, y1, x2, y2], ...]
+  rec_boxes?: number[][]; // [[x1, y1, x2, y2], ...] - simple bbox format
+  rec_polys?: number[][][]; // [[[x1, y1], [x2, y2], [x3, y3], [x4, y4]], ...] - polygon format
   rec_scores: number[];
   model_settings?: Record<string, unknown>;
+}
+
+// Helper to convert polygon to bbox [x1, y1, x2, y2]
+export function polygonToBbox(
+  poly: number[][],
+): [number, number, number, number] {
+  if (!poly || poly.length !== 4) {
+    return [0, 0, 0, 0];
+  }
+  const xs = poly.map((p) => p[0]);
+  const ys = poly.map((p) => p[1]);
+  return [Math.min(...xs), Math.min(...ys), Math.max(...xs), Math.max(...ys)];
+}
+
+// Helper to get bbox from V5 data (handles both rec_boxes and rec_polys)
+export function getV5Bbox(
+  data: OcrV5ResultData,
+  idx: number,
+): [number, number, number, number] {
+  // Try rec_polys first (4-point polygon format)
+  if (data.rec_polys && data.rec_polys[idx]) {
+    return polygonToBbox(data.rec_polys[idx]);
+  }
+  // Fall back to rec_boxes (simple bbox or 8-point format)
+  if (data.rec_boxes && data.rec_boxes[idx]) {
+    const box = data.rec_boxes[idx];
+    if (box.length === 4) {
+      return box as [number, number, number, number];
+    } else if (box.length === 8) {
+      // 8-point format [x1,y1,x2,y2,x3,y3,x4,y4]
+      const xs = [box[0], box[2], box[4], box[6]];
+      const ys = [box[1], box[3], box[5], box[7]];
+      return [
+        Math.min(...xs),
+        Math.min(...ys),
+        Math.max(...xs),
+        Math.max(...ys),
+      ];
+    }
+  }
+  return [0, 0, 0, 0];
 }
 
 // PP-StructureV3, PaddleOCR-VL result format
@@ -323,11 +365,15 @@ export interface OcrJob {
   status: 'processing' | 'completed' | 'failed';
   createdAt: Date;
   result?: OcrResult;
-  imageData?: string; // base64
+  s3Key?: string; // S3 key for the uploaded image
+  imageAvailable?: boolean; // Whether the image is available in S3
+  processingTimeMs?: number; // Time taken to process in milliseconds
+  editedDocumentHtml?: string; // User-edited document HTML
+  editedMarkdown?: string; // User-edited markdown content
 }
 
 // View types for result display
-export type ResultViewTab = 'blocks' | 'json' | 'html' | 'markdown';
+export type ResultViewTab = 'blocks' | 'json' | 'markdown' | 'document';
 
 // Default options by model
 export const DEFAULT_PP_OCRV5_OPTIONS: PpOcrV5Options = {

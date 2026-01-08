@@ -7,8 +7,13 @@ import React, {
 } from 'react';
 import { createFileRoute } from '@tanstack/react-router';
 import { useAuth } from 'react-oidc-context';
+import ReactMarkdown from 'react-markdown';
+import remarkBreaks from 'remark-breaks';
+import rehypeRaw from 'rehype-raw';
+import * as pdfjsLib from 'pdfjs-dist';
 import { useRuntimeConfig } from '../hooks/useRuntimeConfig';
 import { AppLayoutContext } from '../components/AppLayout';
+import DocumentEditor from '../components/DocumentEditor';
 import {
   OcrModel,
   OcrJob,
@@ -26,7 +31,55 @@ import {
   ModelOptions,
   isOcrV5Result,
   isStructureResult,
+  getV5Bbox,
 } from '../types/ocr';
+
+// Set up PDF.js worker - use CDN for reliability
+pdfjsLib.GlobalWorkerOptions.workerSrc = `https://cdn.jsdelivr.net/npm/pdfjs-dist@${pdfjsLib.version}/build/pdf.worker.min.mjs`;
+
+// Helper function to render PDF page to image
+async function renderPdfToImage(
+  arrayBuffer: ArrayBuffer,
+  pageNumber: number = 1,
+): Promise<{ dataUrl: string | null; totalPages: number }> {
+  try {
+    // Make a copy of the ArrayBuffer to avoid "detached ArrayBuffer" error
+    const arrayBufferCopy = arrayBuffer.slice(0);
+    const loadingTask = pdfjsLib.getDocument({
+      data: new Uint8Array(arrayBufferCopy),
+    });
+    const pdf = await loadingTask.promise;
+    const totalPages = pdf.numPages;
+
+    // Ensure page number is valid
+    const validPageNum = Math.max(1, Math.min(pageNumber, totalPages));
+    const page = await pdf.getPage(validPageNum);
+
+    // Use a reasonable scale for preview (2x for good quality)
+    const scale = 2;
+    const viewport = page.getViewport({ scale });
+
+    const canvas = document.createElement('canvas');
+    const context = canvas.getContext('2d');
+    if (!context) return { dataUrl: null, totalPages };
+
+    canvas.width = viewport.width;
+    canvas.height = viewport.height;
+
+    const renderContext = {
+      canvasContext: context,
+      viewport: viewport,
+    };
+
+    await page.render(renderContext as Parameters<typeof page.render>[0])
+      .promise;
+
+    return { dataUrl: canvas.toDataURL('image/jpeg', 0.9), totalPages };
+  } catch (error) {
+    console.error('Failed to render PDF:', error);
+    return { dataUrl: null, totalPages: 0 };
+  }
+}
 
 export const Route = createFileRoute('/')({
   component: OcrPage,
@@ -152,13 +205,156 @@ function OcrPage() {
   const runtimeConfig = useRuntimeConfig();
   const {
     jobs,
+    setJobs,
     addJob,
     updateJob,
     replaceJobId,
     currentJobId,
     setCurrentJobId,
     setOnNewJob,
+    setOnDeleteS3Files,
   } = useContext(AppLayoutContext);
+
+  // API URL for convenience
+  const apiUrl = runtimeConfig.apiUrl || runtimeConfig.apis?.ocr;
+
+  // Fetch jobs from API
+  const fetchJobs = useCallback(async () => {
+    if (!apiUrl || !auth.user?.id_token) return;
+    try {
+      const response = await fetch(`${apiUrl}/jobs`, {
+        method: 'GET',
+        headers: {
+          Authorization: auth.user.id_token,
+        },
+      });
+      if (!response.ok) {
+        console.error('Failed to fetch jobs:', response.statusText);
+        return;
+      }
+      const data = await response.json();
+      // Convert API response to OcrJob format
+      const fetchedJobs: OcrJob[] = data.jobs.map((job: {
+        id: string;
+        filename: string;
+        s3Key: string;
+        createdAt: string;
+        model: string;
+        modelOptions: ModelOptions;
+        status: string;
+      }) => ({
+        id: job.id,
+        filename: job.filename,
+        s3Key: job.s3Key,
+        createdAt: new Date(job.createdAt),
+        model: job.model as OcrModel,
+        modelOptions: job.modelOptions,
+        status: job.status as OcrJob['status'],
+        imageAvailable: true, // Assume available, will be checked when loading
+      }));
+      setJobs(fetchedJobs);
+    } catch (error) {
+      console.error('Failed to fetch jobs:', error);
+    }
+  }, [apiUrl, auth.user?.id_token, setJobs]);
+
+  // Fetch jobs on mount when authenticated
+  useEffect(() => {
+    if (auth.isAuthenticated && apiUrl) {
+      fetchJobs();
+    }
+  }, [auth.isAuthenticated, apiUrl, fetchJobs]);
+
+  // Delete S3 files function
+  const deleteS3Files = useCallback(
+    async (s3Key: string, jobId: string) => {
+      if (!apiUrl || !auth.user?.id_token) return;
+      try {
+        // Encode each path segment to handle Korean filenames and special characters
+        const encodedS3Key = s3Key
+          .split('/')
+          .map((segment) => encodeURIComponent(segment))
+          .join('/');
+        // Pass jobId as query parameter for output deletion
+        const response = await fetch(`${apiUrl}/image/${encodedS3Key}?job_id=${jobId}`, {
+          method: 'DELETE',
+          headers: {
+            Authorization: auth.user.id_token,
+          },
+        });
+        if (!response.ok) {
+          console.error('Failed to delete S3 files:', response.statusText);
+        }
+      } catch (error) {
+        console.error('Failed to delete S3 files:', error);
+      }
+    },
+    [apiUrl, auth.user?.id_token],
+  );
+
+  // Fetch presigned URL for S3 image
+  const fetchS3ImageUrl = useCallback(
+    async (s3Key: string): Promise<string | null> => {
+      if (!apiUrl || !auth.user?.id_token) return null;
+      try {
+        // Encode each path segment to handle Korean filenames and special characters
+        const encodedS3Key = s3Key
+          .split('/')
+          .map((segment) => encodeURIComponent(segment))
+          .join('/');
+        const response = await fetch(`${apiUrl}/image/${encodedS3Key}`, {
+          method: 'GET',
+          headers: {
+            Authorization: auth.user.id_token,
+          },
+        });
+        if (!response.ok) {
+          if (response.status === 404) {
+            return null; // Image not found
+          }
+          throw new Error(`Failed to fetch image URL: ${response.statusText}`);
+        }
+        const data = await response.json();
+        return data.url;
+      } catch (error) {
+        console.error('Failed to fetch S3 image URL:', error);
+        return null;
+      }
+    },
+    [apiUrl, auth.user?.id_token],
+  );
+
+  // Fetch job result from API (polling endpoint)
+  const fetchJobResult = useCallback(
+    async (jobId: string): Promise<OcrJob['result'] | null> => {
+      if (!apiUrl || !auth.user?.id_token) return null;
+      try {
+        const response = await fetch(`${apiUrl}/ocr/${jobId}`, {
+          method: 'GET',
+          headers: {
+            Authorization: auth.user.id_token,
+          },
+        });
+        if (!response.ok) {
+          return null;
+        }
+        const data = await response.json();
+        if (data.status === 'completed' && data.result) {
+          return data.result;
+        }
+        return null;
+      } catch (error) {
+        console.error('Failed to fetch job result:', error);
+        return null;
+      }
+    },
+    [apiUrl, auth.user?.id_token],
+  );
+
+  // Set delete S3 files handler for AppLayout
+  useEffect(() => {
+    setOnDeleteS3Files(deleteS3Files);
+  }, [deleteS3Files, setOnDeleteS3Files]);
 
   // UI State
   const [step, setStep] = useState<Step>('upload');
@@ -170,7 +366,13 @@ function OcrPage() {
     filename: string;
   } | null>(null);
   const [previewUrl, setPreviewUrl] = useState<string | null>(null);
+  const [loadedImageUrl, setLoadedImageUrl] = useState<string | null>(null);
   const fileInputRef = useRef<HTMLInputElement>(null);
+
+  // PDF Page State
+  const [currentPdfPage, setCurrentPdfPage] = useState(1);
+  const [totalPdfPages, setTotalPdfPages] = useState(1);
+  const pdfArrayBufferRef = useRef<ArrayBuffer | null>(null);
 
   // Options State
   const [selectedModel, setSelectedModel] = useState<OcrModel>('paddleocr-vl');
@@ -185,6 +387,12 @@ function OcrPage() {
   // Result State
   const [resultTab, setResultTab] = useState<ResultViewTab>('blocks');
   const [hoveredBlockId, setHoveredBlockId] = useState<number | null>(null);
+  const [selectedBlock, setSelectedBlock] = useState<OcrBlock | null>(null);
+  const [selectedBlockImage, setSelectedBlockImage] = useState<string | null>(
+    null,
+  );
+  const [isMarkdownEditMode, setIsMarkdownEditMode] = useState(false);
+  const [toastMessage, setToastMessage] = useState<string | null>(null);
 
   // Zoom & Pan State
   const [zoomLevel, setZoomLevel] = useState(1);
@@ -198,6 +406,21 @@ function OcrPage() {
   // Current job (from history)
   const currentJob = jobs.find((j) => j.id === currentJobId);
 
+  // Reset loadedImageUrl when previewUrl changes
+  useEffect(() => {
+    setLoadedImageUrl(null);
+    // For data URLs, the image might already be complete, so check after a tick
+    if (previewUrl?.startsWith('data:')) {
+      const checkComplete = () => {
+        if (resultImageRef.current?.complete && resultImageRef.current.naturalWidth > 0) {
+          setLoadedImageUrl(previewUrl);
+        }
+      };
+      // Check immediately and after a short delay
+      requestAnimationFrame(checkComplete);
+    }
+  }, [previewUrl]);
+
   // Reset to upload when "New Document" is clicked
   useEffect(() => {
     setOnNewJob(() => {
@@ -207,53 +430,266 @@ function OcrPage() {
       setSelectedModel('paddleocr-vl');
       setModelOptions(getDefaultOptionsForModel('paddleocr-vl'));
     });
-  }, [setOnNewJob]);
+    // eslint-disable-next-line react-hooks/exhaustive-deps
+  }, []);
 
   // Switch to result view when viewing a job from history
   useEffect(() => {
     if (currentJob) {
-      // Update preview image from job
-      if (currentJob.imageData) {
-        setPreviewUrl(`data:image/jpeg;base64,${currentJob.imageData}`);
+      // Load image from S3
+      if (currentJob.s3Key) {
+        (async () => {
+          const imageUrl = await fetchS3ImageUrl(currentJob.s3Key!);
+          if (!imageUrl) {
+            // Image not found in S3, mark as unavailable
+            updateJob(currentJob.id, { imageAvailable: false });
+            setPreviewUrl(null);
+            return;
+          }
+          // Mark as available
+          if (currentJob.imageAvailable !== true) {
+            updateJob(currentJob.id, { imageAvailable: true });
+          }
+
+          // Check if it's a PDF - render first page to image
+          if (currentJob.filename.toLowerCase().endsWith('.pdf')) {
+            try {
+              const response = await fetch(imageUrl);
+              const arrayBuffer = await response.arrayBuffer();
+              pdfArrayBufferRef.current = arrayBuffer;
+              const { dataUrl, totalPages } = await renderPdfToImage(arrayBuffer, 1);
+              setTotalPdfPages(totalPages);
+              setCurrentPdfPage(1);
+              if (dataUrl) {
+                setPreviewUrl(dataUrl);
+              } else {
+                setPreviewUrl(null);
+              }
+            } catch (error) {
+              console.error('Failed to render PDF:', error);
+              setPreviewUrl(null);
+            }
+          } else {
+            pdfArrayBufferRef.current = null;
+            setTotalPdfPages(1);
+            setCurrentPdfPage(1);
+            setPreviewUrl(imageUrl);
+          }
+        })();
       }
-      // Switch to result view if job has result
-      if (currentJob.result) {
+
+      // Fetch result from S3 if not already loaded
+      if (!currentJob.result && currentJob.status === 'completed') {
+        (async () => {
+          const result = await fetchJobResult(currentJob.id);
+          if (result) {
+            updateJob(currentJob.id, { result });
+            setStep('result');
+          }
+        })();
+      } else if (currentJob.result) {
+        // Switch to result view if job has result
         setStep('result');
       }
+
       // Reset zoom and pan when switching jobs
       setZoomLevel(1);
       setPanPosition({ x: 0, y: 0 });
+      // Reset edit mode when switching jobs
+      setIsMarkdownEditMode(false);
+      // Reset cropped images when switching jobs
+      setCroppedImagesMap(new Map());
+      setCroppedImagesReady(false);
+      lastProcessedBlocksRef.current = '';
     }
-  }, [currentJobId]);
+  }, [currentJobId, currentJob?.s3Key, currentJob?.status, currentJob?.result, fetchS3ImageUrl, fetchJobResult, updateJob]);
 
   // Ensure previewUrl is set when step changes to result
   useEffect(() => {
     if (step === 'result' && !previewUrl) {
       const job = currentJob || jobs.find((j) => j.id === processingJobId);
-      if (job?.imageData) {
-        setPreviewUrl(`data:image/jpeg;base64,${job.imageData}`);
+      if (!job?.s3Key) return;
+
+      (async () => {
+        const imageUrl = await fetchS3ImageUrl(job.s3Key!);
+        if (!imageUrl) return;
+
+        // Check if it's a PDF - render first page to image
+        if (job.filename.toLowerCase().endsWith('.pdf')) {
+          try {
+            const response = await fetch(imageUrl);
+            const arrayBuffer = await response.arrayBuffer();
+            pdfArrayBufferRef.current = arrayBuffer;
+            const { dataUrl, totalPages } = await renderPdfToImage(arrayBuffer, 1);
+            setTotalPdfPages(totalPages);
+            setCurrentPdfPage(1);
+            if (dataUrl) {
+              setPreviewUrl(dataUrl);
+            }
+          } catch (error) {
+            console.error('Failed to render PDF:', error);
+          }
+        } else {
+          pdfArrayBufferRef.current = null;
+          setTotalPdfPages(1);
+          setCurrentPdfPage(1);
+          setPreviewUrl(imageUrl);
+        }
+      })();
+    }
+  }, [step, previewUrl, currentJob, jobs, processingJobId, fetchS3ImageUrl]);
+
+  // Generate cropped image for selected block modal
+  useEffect(() => {
+    if (!selectedBlock) {
+      setSelectedBlockImage(null);
+      return;
+    }
+
+    // Use already loaded image from resultImageRef
+    const img = resultImageRef.current;
+    if (!img || !img.complete || img.naturalWidth === 0) {
+      setSelectedBlockImage(null);
+      return;
+    }
+
+    // Get structure data for dimensions
+    let structWidth = 0;
+    let structHeight = 0;
+
+    if (currentJob?.result?.results?.[0]) {
+      const resultData = currentJob.result.results[0];
+      if ('width' in resultData && 'height' in resultData) {
+        const structData = resultData as OcrStructureResultData;
+        structWidth = structData.width;
+        structHeight = structData.height;
       }
     }
-  }, [step, previewUrl, currentJob, jobs, processingJobId]);
+
+    try {
+      const [x1, y1, x2, y2] = selectedBlock.block_bbox;
+      const canvas = document.createElement('canvas');
+      const ctx = canvas.getContext('2d');
+      if (!ctx) {
+        setSelectedBlockImage(null);
+        return;
+      }
+
+      // Use structure data dimensions or fall back to natural image dimensions
+      const baseWidth = structWidth || img.naturalWidth;
+      const baseHeight = structHeight || img.naturalHeight;
+
+      const scaleX = img.naturalWidth / baseWidth;
+      const scaleY = img.naturalHeight / baseHeight;
+
+      const cropX = Math.max(0, x1 * scaleX);
+      const cropY = Math.max(0, y1 * scaleY);
+      const cropW = Math.min((x2 - x1) * scaleX, img.naturalWidth - cropX);
+      const cropH = Math.min((y2 - y1) * scaleY, img.naturalHeight - cropY);
+
+      if (cropW <= 0 || cropH <= 0) {
+        setSelectedBlockImage(null);
+        return;
+      }
+
+      canvas.width = cropW;
+      canvas.height = cropH;
+
+      ctx.drawImage(img, cropX, cropY, cropW, cropH, 0, 0, cropW, cropH);
+
+      const dataUrl = canvas.toDataURL('image/png');
+      setSelectedBlockImage(dataUrl);
+    } catch (e) {
+      console.error('Failed to crop image for preview:', e);
+      setSelectedBlockImage(null);
+    }
+  }, [selectedBlock, currentJob]);
+
+  // Close modal on ESC key
+  useEffect(() => {
+    const handleKeyDown = (e: KeyboardEvent) => {
+      if (e.key === 'Escape' && selectedBlock) {
+        setSelectedBlock(null);
+      }
+    };
+    window.addEventListener('keydown', handleKeyDown);
+    return () => window.removeEventListener('keydown', handleKeyDown);
+  }, [selectedBlock]);
+
+  // Max file size: 100MB (using presigned URL for files > 5MB)
+  const MAX_FILE_SIZE = 100 * 1024 * 1024;
 
   // File handling
-  const handleFileSelect = useCallback((file: File) => {
-    const reader = new FileReader();
-    reader.onload = (e) => {
-      const base64 = (e.target?.result as string).split(',')[1];
-      setImageData({ base64, filename: file.name });
-      setPreviewUrl(e.target?.result as string);
-      setStep('options');
-    };
-    reader.readAsDataURL(file);
+  const handleFileSelect = useCallback(async (file: File) => {
+    // Check file size
+    if (file.size > MAX_FILE_SIZE) {
+      alert(
+        `File is too large (${(file.size / 1024 / 1024).toFixed(1)}MB). Maximum size is 100MB.`,
+      );
+      return;
+    }
+
+    // Check if file is a PDF
+    if (file.type === 'application/pdf') {
+      try {
+        // Read file as ArrayBuffer
+        const arrayBuffer = await file.arrayBuffer();
+
+        // Convert to base64 first (before ArrayBuffer gets detached)
+        const uint8Array = new Uint8Array(arrayBuffer);
+        let binaryString = '';
+        uint8Array.forEach((byte) => {
+          binaryString += String.fromCharCode(byte);
+        });
+        const base64 = btoa(binaryString);
+
+        // Create a copy of the ArrayBuffer for PDF rendering
+        const arrayBufferCopy = uint8Array.buffer.slice(0);
+
+        // Render PDF first page to image for preview
+        pdfArrayBufferRef.current = arrayBufferCopy;
+        const { dataUrl: pdfPreviewUrl, totalPages } = await renderPdfToImage(arrayBufferCopy, 1);
+        if (!pdfPreviewUrl) {
+          alert('Failed to render PDF preview');
+          return;
+        }
+
+        setTotalPdfPages(totalPages);
+        setCurrentPdfPage(1);
+        setImageData({ base64, filename: file.name });
+        setPreviewUrl(pdfPreviewUrl);
+        setStep('options');
+      } catch (error) {
+        console.error('Failed to process PDF:', error);
+        alert('Failed to process PDF file');
+      }
+    } else {
+      // Handle image files as before
+      const reader = new FileReader();
+      reader.onload = (e) => {
+        const base64 = (e.target?.result as string).split(',')[1];
+        setImageData({ base64, filename: file.name });
+        setPreviewUrl(e.target?.result as string);
+        setStep('options');
+      };
+      reader.readAsDataURL(file);
+    }
   }, []);
+
+  // Supported file types
+  const supportedTypes = [
+    'image/png',
+    'image/jpeg',
+    'image/tiff',
+    'application/pdf',
+  ];
 
   const handleDrop = useCallback(
     (e: React.DragEvent) => {
       e.preventDefault();
       setIsDragging(false);
       const file = e.dataTransfer.files[0];
-      if (file && file.type.startsWith('image/')) {
+      if (file && supportedTypes.includes(file.type)) {
         handleFileSelect(file);
       }
     },
@@ -282,6 +718,25 @@ function OcrPage() {
     setZoomLevel(1);
     setPanPosition({ x: 0, y: 0 });
   }, []);
+
+  // PDF page navigation
+  const handlePdfPageChange = useCallback(async (newPage: number) => {
+    if (!pdfArrayBufferRef.current || newPage < 1 || newPage > totalPdfPages) return;
+
+    try {
+      const { dataUrl } = await renderPdfToImage(pdfArrayBufferRef.current, newPage);
+      if (dataUrl) {
+        setCurrentPdfPage(newPage);
+        setPreviewUrl(dataUrl);
+        // Reset cropped images for new page
+        setCroppedImagesMap(new Map());
+        setCroppedImagesReady(false);
+        lastProcessedBlocksRef.current = '';
+      }
+    } catch (error) {
+      console.error('Error rendering PDF page:', error);
+    }
+  }, [totalPdfPages]);
 
   const handleWheel = useCallback((e: React.WheelEvent) => {
     if (e.ctrlKey || e.metaKey) {
@@ -357,6 +812,7 @@ function OcrPage() {
 
   // Polling for job status
   const pollTimeoutRef = useRef<ReturnType<typeof setTimeout> | null>(null);
+  const jobStartTimeRef = useRef<number | null>(null);
 
   // Cleanup polling on unmount
   useEffect(() => {
@@ -386,10 +842,15 @@ function OcrPage() {
         const data = await response.json();
 
         if (data.status === 'completed') {
+          const processingTimeMs = jobStartTimeRef.current
+            ? Date.now() - jobStartTimeRef.current
+            : undefined;
           updateJob(jobId, {
             status: 'completed',
             result: data.result,
+            processingTimeMs,
           });
+          jobStartTimeRef.current = null;
           setIsProcessing(false);
           setProcessingJobId(null);
           setStep('result');
@@ -397,6 +858,7 @@ function OcrPage() {
           updateJob(jobId, {
             status: 'failed',
           });
+          jobStartTimeRef.current = null;
           setIsProcessing(false);
           setProcessingJobId(null);
           alert(data.error || 'Processing failed');
@@ -412,32 +874,78 @@ function OcrPage() {
     [runtimeConfig, auth.user?.id_token, updateJob],
   );
 
-  // Submit job
+  // Submit job - always upload to S3
   const handleSubmit = useCallback(async () => {
     if (!imageData) return;
 
     setIsProcessing(true);
+    jobStartTimeRef.current = Date.now();
 
     const jobId = `job-${Date.now()}`;
-    const newJob: OcrJob = {
-      id: jobId,
-      filename: imageData.filename,
-      model: selectedModel,
-      modelOptions: modelOptions,
-      status: 'processing',
-      createdAt: new Date(),
-      imageData: imageData.base64,
-    };
-
-    addJob(newJob);
 
     try {
-      const apiUrl = runtimeConfig.apiUrl || runtimeConfig.apis?.ocr;
-
       if (!apiUrl) {
         throw new Error('API URL not configured');
       }
 
+      // Always upload to S3 first
+      const uploadResponse = await fetch(`${apiUrl}/upload`, {
+        method: 'POST',
+        headers: {
+          Authorization: auth.user?.id_token || '',
+          'Content-Type': 'application/json',
+        },
+        body: JSON.stringify({
+          filename: imageData.filename,
+          content_type: imageData.filename.toLowerCase().endsWith('.pdf')
+            ? 'application/pdf'
+            : 'image/jpeg',
+        }),
+      });
+
+      if (!uploadResponse.ok) {
+        throw new Error('Failed to get upload URL');
+      }
+
+      const uploadData = await uploadResponse.json();
+      const { upload_url, s3_key } = uploadData;
+
+      // Convert base64 to binary and upload to S3
+      const binaryString = atob(imageData.base64);
+      const bytes = new Uint8Array(binaryString.length);
+      for (let i = 0; i < binaryString.length; i++) {
+        bytes[i] = binaryString.charCodeAt(i);
+      }
+
+      const s3UploadResponse = await fetch(upload_url, {
+        method: 'PUT',
+        body: bytes,
+        headers: {
+          'Content-Type': imageData.filename.toLowerCase().endsWith('.pdf')
+            ? 'application/pdf'
+            : 'image/jpeg',
+        },
+      });
+
+      if (!s3UploadResponse.ok) {
+        throw new Error('Failed to upload file to S3');
+      }
+
+      // Create job with s3Key (not imageData)
+      const newJob: OcrJob = {
+        id: jobId,
+        filename: imageData.filename,
+        model: selectedModel,
+        modelOptions: modelOptions,
+        status: 'processing',
+        createdAt: new Date(),
+        s3Key: s3_key,
+        imageAvailable: true,
+      };
+
+      addJob(newJob);
+
+      // Submit OCR request with s3_key
       const response = await fetch(`${apiUrl}/ocr`, {
         method: 'POST',
         headers: {
@@ -445,7 +953,7 @@ function OcrPage() {
           'Content-Type': 'application/json',
         },
         body: JSON.stringify({
-          image_base64: imageData.base64,
+          s3_key: s3_key,
           filename: imageData.filename,
           model: selectedModel,
           options: modelOptions,
@@ -459,14 +967,16 @@ function OcrPage() {
       const data = await response.json();
       const backendJobId = data.job_id;
 
-      // Replace the local job ID with the backend job_id
+      // Replace the local job ID with the backend job_id and update s3Key
       replaceJobId(jobId, backendJobId);
+      updateJob(backendJobId, { s3Key: s3_key });
       setProcessingJobId(backendJobId);
 
       // Start polling
       pollJobStatus(backendJobId);
     } catch (err) {
       console.error('Submit error:', err);
+      // If job was added, mark as failed
       updateJob(jobId, { status: 'failed' });
       setIsProcessing(false);
       alert('Failed to submit OCR request. Please try again.');
@@ -476,14 +986,91 @@ function OcrPage() {
     selectedModel,
     modelOptions,
     auth.user?.id_token,
-    runtimeConfig,
+    apiUrl,
     addJob,
     updateJob,
     replaceJobId,
     pollJobStatus,
   ]);
 
-  // Get result data
+  // Retry: Load image from S3 and go to preview step
+  const handleRetry = useCallback(async () => {
+    if (!currentJob?.s3Key) return;
+
+    try {
+      // Fetch presigned URL for the image
+      const imageUrl = await fetchS3ImageUrl(currentJob.s3Key);
+      if (!imageUrl) {
+        alert('Failed to load image from S3');
+        return;
+      }
+
+      // Fetch file from S3
+      const response = await fetch(imageUrl);
+      const blob = await response.blob();
+
+      // Check if it's a PDF
+      const isPdf = currentJob.filename.toLowerCase().endsWith('.pdf');
+
+      if (isPdf) {
+        // For PDF: convert to base64 and render first page for preview
+        const arrayBuffer = await blob.arrayBuffer();
+        const uint8Array = new Uint8Array(arrayBuffer);
+        let binaryString = '';
+        for (let i = 0; i < uint8Array.length; i++) {
+          binaryString += String.fromCharCode(uint8Array[i]);
+        }
+        const base64 = btoa(binaryString);
+
+        // Render PDF first page for preview
+        pdfArrayBufferRef.current = arrayBuffer;
+        const { dataUrl: pdfPreviewUrl, totalPages } = await renderPdfToImage(arrayBuffer, 1);
+        if (!pdfPreviewUrl) {
+          alert('Failed to render PDF preview');
+          return;
+        }
+
+        setTotalPdfPages(totalPages);
+        setCurrentPdfPage(1);
+        setImageData({ base64, filename: currentJob.filename });
+        setPreviewUrl(pdfPreviewUrl);
+
+        // Restore previous model and options
+        setSelectedModel(currentJob.model);
+        if (currentJob.modelOptions) {
+          setModelOptions(currentJob.modelOptions);
+        }
+
+        setCurrentJobId(null);
+        setStep('options');
+      } else {
+        // For images: use FileReader
+        const reader = new FileReader();
+        reader.onload = () => {
+          const dataUrl = reader.result as string;
+          const base64 = dataUrl.split(',')[1];
+
+          setImageData({ base64, filename: currentJob.filename });
+          setPreviewUrl(dataUrl);
+
+          // Restore previous model and options
+          setSelectedModel(currentJob.model);
+          if (currentJob.modelOptions) {
+            setModelOptions(currentJob.modelOptions);
+          }
+
+          setCurrentJobId(null);
+          setStep('options');
+        };
+        reader.readAsDataURL(blob);
+      }
+    } catch (err) {
+      console.error('Retry error:', err);
+      alert('Failed to load image for retry');
+    }
+  }, [currentJob, fetchS3ImageUrl, setCurrentJobId]);
+
+  // Get result data for current page
   const getResultData = (): OcrResultData | null => {
     // Try multiple ways to find the job
     let job = currentJob;
@@ -503,12 +1090,15 @@ function OcrPage() {
     // Format 1: { res: {...} }
     if (result.res) return result.res;
 
-    // Format 2: { results: [{ res: {...} }] }
-    if (result.results?.[0]) {
-      const firstResult = result.results[0] as { res?: OcrResultData };
-      if (firstResult.res) return firstResult.res;
+    // Format 2 & 3: { results: [...] } - use currentPdfPage for multi-page PDFs
+    const pageIndex = currentPdfPage - 1;
+    if (result.results && result.results.length > 0) {
+      // Get the result for current page, or first page if index out of bounds
+      const pageResult = result.results[pageIndex] || result.results[0];
+      const typedResult = pageResult as { res?: OcrResultData };
+      if (typedResult.res) return typedResult.res;
       // Format 3: { results: [{...}] } (direct data)
-      return result.results[0] as OcrResultData;
+      return pageResult as OcrResultData;
     }
 
     return null;
@@ -530,7 +1120,7 @@ function OcrPage() {
         <input
           ref={fileInputRef}
           type="file"
-          accept="image/*"
+          accept=".png,.jpg,.jpeg,.tiff,.tif,.pdf,image/png,image/jpeg,image/tiff,application/pdf"
           onChange={handleFileInputChange}
           style={{ display: 'none' }}
         />
@@ -542,9 +1132,19 @@ function OcrPage() {
           onClick={() => fileInputRef.current?.click()}
         >
           <UploadIcon />
-          <div className="upload-zone-title">Drag and drop your image here</div>
+          <div className="upload-zone-title">Drag and drop your file here</div>
           <div className="upload-zone-subtitle">
             or <span className="upload-zone-link">click to browse</span>
+          </div>
+          <div className="upload-zone-formats">
+            <div className="formats-title">Supported formats</div>
+            <div className="formats-list">
+              <span className="format-tag">PNG</span>
+              <span className="format-tag">JPEG</span>
+              <span className="format-tag">TIFF</span>
+              <span className="format-tag">PDF</span>
+            </div>
+            <div className="formats-limit">Maximum file size: 100MB</div>
           </div>
         </div>
 
@@ -776,7 +1376,35 @@ function OcrPage() {
           <div className="result-image-panel">
             <div className="result-image-header">
               <div className="result-image-nav">
-                <span className="page-indicator">Page 1</span>
+                {totalPdfPages > 1 ? (
+                  <>
+                    <button
+                      className="page-nav-btn"
+                      onClick={() => handlePdfPageChange(currentPdfPage - 1)}
+                      disabled={currentPdfPage <= 1}
+                      title="Previous Page"
+                    >
+                      <svg width="14" height="14" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="2">
+                        <polyline points="15 18 9 12 15 6" />
+                      </svg>
+                    </button>
+                    <span className="page-indicator">
+                      Page {currentPdfPage} / {totalPdfPages}
+                    </span>
+                    <button
+                      className="page-nav-btn"
+                      onClick={() => handlePdfPageChange(currentPdfPage + 1)}
+                      disabled={currentPdfPage >= totalPdfPages}
+                      title="Next Page"
+                    >
+                      <svg width="14" height="14" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="2">
+                        <polyline points="9 18 15 12 9 6" />
+                      </svg>
+                    </button>
+                  </>
+                ) : (
+                  <span className="page-indicator">Page 1</span>
+                )}
               </div>
               <div className="zoom-controls">
                 <button
@@ -818,20 +1446,9 @@ function OcrPage() {
               </div>
               <button
                 className="btn btn-sm btn-outline"
-                onClick={() => {
-                  // Keep the image, go back to options
-                  const job =
-                    currentJob || jobs.find((j) => j.id === processingJobId);
-                  if (job?.imageData) {
-                    setImageData({
-                      base64: job.imageData,
-                      filename: job.filename,
-                    });
-                    setPreviewUrl(`data:image/jpeg;base64,${job.imageData}`);
-                    setStep('options');
-                    setCurrentJobId(null);
-                  }
-                }}
+                onClick={handleRetry}
+                disabled={!currentJob?.s3Key}
+                title="Load image and retry with different options"
               >
                 <RetryIcon /> Retry
               </button>
@@ -860,24 +1477,26 @@ function OcrPage() {
                 {previewUrl && (
                   <>
                     <img
+                      key={previewUrl}
                       ref={resultImageRef}
                       src={previewUrl}
                       alt="Document"
                       className="result-image"
+                      crossOrigin={previewUrl?.startsWith('data:') ? undefined : 'anonymous'}
+                      onLoad={() => setLoadedImageUrl(previewUrl)}
                     />
                     {/* Block overlays for Structure format */}
                     {showBbox &&
+                      loadedImageUrl === previewUrl &&
                       !isV5Format &&
+                      resultImageRef.current &&
                       blocks.map((block, idx) => {
                         const [x1, y1, x2, y2] = block.block_bbox;
                         const structData = resultData as OcrStructureResultData;
-                        const imageEl = resultImageRef.current;
-                        const scaleX = imageEl
-                          ? imageEl.clientWidth / structData.width
-                          : 1;
-                        const scaleY = imageEl
-                          ? imageEl.clientHeight / structData.height
-                          : 1;
+                        const imageEl = resultImageRef.current!;
+                        if (!imageEl || !structData.width || !structData.height) return null;
+                        const scaleX = imageEl.clientWidth / structData.width;
+                        const scaleY = imageEl.clientHeight / structData.height;
 
                         const isHighlighted = hoveredBlockId === block.block_id;
                         return (
@@ -895,18 +1514,19 @@ function OcrPage() {
                       })}
                     {/* Block overlays for PP-OCRv5 format */}
                     {showBbox &&
+                      loadedImageUrl === previewUrl &&
                       isV5Format &&
                       v5Data &&
-                      v5Data.rec_boxes.map((box, idx) => {
-                        const [x1, y1, x2, y2] = box;
+                      resultImageRef.current &&
+                      v5Data.rec_texts.map((_, idx) => {
+                        const [x1, y1, x2, y2] = getV5Bbox(v5Data, idx);
+                        if (x1 === 0 && y1 === 0 && x2 === 0 && y2 === 0)
+                          return null;
                         const imageEl = resultImageRef.current;
+                        if (!imageEl || !imageEl.naturalWidth || !imageEl.naturalHeight) return null;
                         // Use natural dimensions for scaling
-                        const scaleX = imageEl
-                          ? imageEl.clientWidth / imageEl.naturalWidth
-                          : 1;
-                        const scaleY = imageEl
-                          ? imageEl.clientHeight / imageEl.naturalHeight
-                          : 1;
+                        const scaleX = imageEl.clientWidth / imageEl.naturalWidth;
+                        const scaleY = imageEl.clientHeight / imageEl.naturalHeight;
 
                         const isHighlighted = hoveredBlockId === idx;
                         return (
@@ -978,23 +1598,35 @@ function OcrPage() {
                         </div>
                       );
                     })}
+                  {job.processingTimeMs && (
+                    <div className="model-settings-item">
+                      <span className="model-settings-label">Time</span>
+                      <span className="model-settings-value model-settings-time">
+                        {job.processingTimeMs >= 1000
+                          ? `${(job.processingTimeMs / 1000).toFixed(1)}s`
+                          : `${job.processingTimeMs}ms`}
+                      </span>
+                    </div>
+                  )}
                 </div>
               );
             })()}
             <div className="result-tabs">
-              {(['blocks', 'json', 'markdown'] as ResultViewTab[]).map(
-                (tab) => (
-                  <button
-                    key={tab}
-                    className={`result-tab ${resultTab === tab ? 'active' : ''}`}
-                    onClick={() => setResultTab(tab)}
-                  >
-                    {tab === 'blocks'
-                      ? 'Blocks'
+              {(
+                ['blocks', 'json', 'markdown', 'document'] as ResultViewTab[]
+              ).map((tab) => (
+                <button
+                  key={tab}
+                  className={`result-tab ${resultTab === tab ? 'active' : ''}`}
+                  onClick={() => setResultTab(tab)}
+                >
+                  {tab === 'blocks'
+                    ? 'Blocks'
+                    : tab === 'document'
+                      ? 'Document'
                       : tab.charAt(0).toUpperCase() + tab.slice(1)}
-                  </button>
-                ),
-              )}
+                </button>
+              ))}
             </div>
             <div className="result-content">
               {resultTab === 'blocks' &&
@@ -1006,6 +1638,13 @@ function OcrPage() {
                 (isV5Format
                   ? renderV5MarkdownView(resultData as OcrV5ResultData)
                   : renderMarkdownView(blocks))}
+              {resultTab === 'document' &&
+                (isV5Format
+                  ? renderV5DocumentView(resultData as OcrV5ResultData)
+                  : renderDocumentView(
+                      blocks,
+                      resultData as OcrStructureResultData,
+                    ))}
             </div>
           </div>
         </div>
@@ -1015,6 +1654,33 @@ function OcrPage() {
 
   // View renderers
   const renderBlocksView = (blocks: OcrBlock[]) => {
+    // Generate cropped images if needed (same logic as Document view)
+    const structData = resultData as OcrStructureResultData;
+    const imgElement = resultImageRef.current;
+    const blocksKey = `${loadedImageUrl}:${blocks.map((b) => b.block_id).join(',')}`;
+    const imageIsReady =
+      imgElement &&
+      imgElement.complete &&
+      imgElement.naturalWidth > 0 &&
+      loadedImageUrl === previewUrl;
+
+    if (
+      blocksKey !== lastProcessedBlocksRef.current &&
+      imageIsReady &&
+      structData?.width &&
+      structData?.height
+    ) {
+      lastProcessedBlocksRef.current = blocksKey;
+      try {
+        const croppedMap = generateCroppedImages(blocks, structData, imgElement);
+        if (croppedMap.size > 0) {
+          setTimeout(() => setCroppedImagesMap(croppedMap), 0);
+        }
+      } catch (error) {
+        console.error('Failed to generate cropped images:', error);
+      }
+    }
+
     // Process blocks to distribute multi-line content to empty blocks in same group
     const processedBlocks = [...blocks];
 
@@ -1089,41 +1755,48 @@ function OcrPage() {
         visualBlockTypes.includes(block.block_label),
     );
 
-    // Helper function to render cropped image
+    // Helper function to render cropped image using croppedImagesMap
     const renderCroppedImage = (block: OcrBlock) => {
-      if (!previewUrl) return null;
-      const [x1, y1, x2, y2] = block.block_bbox;
-      const structData = resultData as OcrStructureResultData;
-      if (!structData.width || !structData.height) return null;
+      const croppedSrc = croppedImagesMap.get(block.block_id);
+      if (!croppedSrc) {
+        // Fallback: show placeholder while image is being generated
+        const [x1, y1, x2, y2] = block.block_bbox;
+        const cropWidth = x2 - x1;
+        const cropHeight = y2 - y1;
+        return (
+          <div
+            style={{
+              width: Math.min(cropWidth, 300),
+              height: Math.min(cropHeight, 200),
+              background: 'var(--bg-tertiary)',
+              borderRadius: '8px',
+              display: 'flex',
+              alignItems: 'center',
+              justifyContent: 'center',
+              color: 'var(--text-muted)',
+              fontSize: '12px',
+            }}
+          >
+            Loading image...
+          </div>
+        );
+      }
 
+      const [x1, , x2] = block.block_bbox;
       const cropWidth = x2 - x1;
-      const cropHeight = y2 - y1;
 
       return (
-        <div
+        <img
+          src={croppedSrc}
+          alt={`${block.block_label} block`}
           style={{
-            position: 'relative',
-            width: '100%',
-            maxWidth: '300px',
-            height: Math.min(200, (cropHeight / cropWidth) * 300),
-            overflow: 'hidden',
+            width: Math.min(cropWidth, 300),
+            maxWidth: '100%',
+            height: 'auto',
             borderRadius: '8px',
             background: 'var(--bg-tertiary)',
           }}
-        >
-          <img
-            src={previewUrl}
-            alt={`${block.block_label} block`}
-            style={{
-              position: 'absolute',
-              width: `${(structData.width / cropWidth) * 100}%`,
-              height: 'auto',
-              left: `${(-x1 / cropWidth) * 100}%`,
-              top: `${(-y1 / cropHeight) * 100}%`,
-              maxWidth: 'none',
-            }}
-          />
-        </div>
+        />
       );
     };
 
@@ -1143,9 +1816,11 @@ function OcrPage() {
           filteredBlocks.map((block, idx) => (
             <div
               key={idx}
-              className={`block-item ${hoveredBlockId === block.block_id ? 'highlighted' : ''}`}
+              className={`block-item ${block.block_label} ${hoveredBlockId === block.block_id ? 'highlighted' : ''}`}
               onMouseEnter={() => setHoveredBlockId(block.block_id)}
               onMouseLeave={() => setHoveredBlockId(null)}
+              onClick={() => setSelectedBlock(block)}
+              style={{ cursor: 'pointer' }}
             >
               <div className="block-header">
                 <span className={`block-label ${block.block_label}`}>
@@ -1161,10 +1836,18 @@ function OcrPage() {
                     className="block-content"
                     dangerouslySetInnerHTML={{ __html: block.block_content }}
                   />
-                ) : visualBlockTypes.includes(block.block_label) &&
-                  (!block.block_content ||
-                    block.block_content.trim() === '') ? (
-                  renderCroppedImage(block)
+                ) : visualBlockTypes.includes(block.block_label) ? (
+                  <>
+                    {renderCroppedImage(block)}
+                    {block.block_content?.trim() && (
+                      <div
+                        className="block-content"
+                        style={{ whiteSpace: 'pre-wrap', marginTop: '12px' }}
+                      >
+                        {block.block_content}
+                      </div>
+                    )}
+                  </>
                 ) : (
                   <div
                     className="block-content"
@@ -1181,33 +1864,162 @@ function OcrPage() {
     );
   };
 
-  const renderJsonView = (data: OcrResultData) => (
-    <div className="json-view">
-      <pre>{JSON.stringify(data, null, 2)}</pre>
-    </div>
+  // Download helper
+  const downloadFile = useCallback(
+    (content: string, filename: string, mimeType: string) => {
+      const blob = new Blob([content], { type: `${mimeType};charset=utf-8` });
+      const url = URL.createObjectURL(blob);
+      const a = document.createElement('a');
+      a.href = url;
+      a.download = filename;
+      document.body.appendChild(a);
+      a.click();
+      document.body.removeChild(a);
+      URL.revokeObjectURL(url);
+    },
+    [],
   );
 
-  const renderMarkdownView = (blocks: OcrBlock[]) => {
-    const markdown = blocks
-      .map((block) => {
-        if (block.block_label === 'doc_title') {
-          return `# ${block.block_content}`;
-        }
-        if (block.block_label === 'paragraph_title') {
-          return `## ${block.block_content}`;
-        }
-        if (block.block_label === 'table') {
-          return block.block_content;
-        }
-        return block.block_content;
-      })
-      .join('\n\n');
+  // Show toast helper
+  const showToast = useCallback((message: string) => {
+    setToastMessage(message);
+    setTimeout(() => setToastMessage(null), 2000);
+  }, []);
+
+  // Copy to clipboard helper
+  const copyToClipboard = useCallback(
+    async (text: string) => {
+      try {
+        await navigator.clipboard.writeText(text);
+        showToast('Copied!');
+      } catch (err) {
+        console.error('Failed to copy:', err);
+        showToast('Failed to copy');
+      }
+    },
+    [showToast],
+  );
+
+  const renderJsonView = (data: OcrResultData) => {
+    const job = currentJob || jobs.find((j) => j.id === processingJobId);
+    const filename = job?.filename?.replace(/\.[^/.]+$/, '') || 'ocr_result';
+    const jsonString = JSON.stringify(data, null, 2);
 
     return (
-      <div className="rendered-view">
-        <pre style={{ whiteSpace: 'pre-wrap', fontFamily: 'inherit' }}>
-          {markdown}
-        </pre>
+      <div className="view-with-toolbar">
+        <div className="view-toolbar">
+          <button
+            className="btn btn-sm btn-outline"
+            onClick={() => copyToClipboard(jsonString)}
+          >
+            Copy
+          </button>
+          <button
+            className="btn btn-sm btn-outline"
+            onClick={() =>
+              downloadFile(jsonString, `${filename}.json`, 'application/json')
+            }
+          >
+            Download
+          </button>
+        </div>
+        <div className="json-view">
+          <pre>{jsonString}</pre>
+        </div>
+      </div>
+    );
+  };
+
+  // Generate markdown from blocks
+  const generateMarkdown = useCallback((blocks: OcrBlock[]): string => {
+    return blocks
+      .map((block) => {
+        // Trim whitespace and newlines from content
+        const content = (block.block_content || '').replace(
+          /^[\s\n]+|[\s\n]+$/g,
+          '',
+        );
+        if (!content) return '';
+
+        if (block.block_label === 'doc_title') {
+          return `# ${content}`;
+        }
+        if (block.block_label === 'paragraph_title') {
+          return `## ${content}`;
+        }
+        if (block.block_label === 'header') {
+          return `**${content}**`;
+        }
+        if (block.block_label === 'table') {
+          return block.block_content; // Keep table HTML as-is
+        }
+        return content;
+      })
+      .filter((line) => line) // Remove empty lines
+      .join('\n\n');
+  }, []);
+
+  // Generate markdown from V5 data
+  const generateV5Markdown = useCallback((data: OcrV5ResultData): string => {
+    const texts = data.rec_texts || [];
+    return texts.join('\n\n');
+  }, []);
+
+  const renderMarkdownView = (blocks: OcrBlock[]) => {
+    const job = currentJob || jobs.find((j) => j.id === processingJobId);
+    const filename = job?.filename?.replace(/\.[^/.]+$/, '') || 'ocr_result';
+
+    // Use edited markdown from job if available, otherwise generate
+    const generatedMarkdown = generateMarkdown(blocks);
+    const displayContent = job?.editedMarkdown || generatedMarkdown;
+
+    const handleMarkdownChange = (content: string) => {
+      if (job) {
+        updateJob(job.id, { editedMarkdown: content });
+      }
+    };
+
+    return (
+      <div className="view-with-toolbar">
+        <div className="view-toolbar">
+          <button
+            className={`btn btn-sm ${isMarkdownEditMode ? 'btn-primary' : 'btn-outline'}`}
+            onClick={() => setIsMarkdownEditMode(!isMarkdownEditMode)}
+          >
+            {isMarkdownEditMode ? 'Preview' : 'Edit'}
+          </button>
+          <button
+            className="btn btn-sm btn-outline"
+            onClick={() => copyToClipboard(displayContent)}
+          >
+            Copy
+          </button>
+          <button
+            className="btn btn-sm btn-outline"
+            onClick={() =>
+              downloadFile(displayContent, `${filename}.md`, 'text/markdown')
+            }
+          >
+            Download
+          </button>
+        </div>
+        {isMarkdownEditMode ? (
+          <textarea
+            className="markdown-editor"
+            value={displayContent}
+            onChange={(e) => handleMarkdownChange(e.target.value)}
+            spellCheck={false}
+          />
+        ) : (
+          <div className="markdown-view">
+            <ReactMarkdown
+              remarkPlugins={[remarkBreaks]}
+              rehypePlugins={[rehypeRaw]}
+            >
+              {displayContent}
+            </ReactMarkdown>
+          </div>
+        )}
       </div>
     );
   };
@@ -1216,6 +2028,23 @@ function OcrPage() {
   const renderV5BlocksView = (data: OcrV5ResultData) => {
     const texts = data.rec_texts || [];
     const scores = data.rec_scores || [];
+
+    const handleV5BlockClick = (idx: number) => {
+      const bbox = getV5Bbox(data, idx);
+      if (bbox[0] === 0 && bbox[1] === 0 && bbox[2] === 0 && bbox[3] === 0)
+        return;
+
+      // Create synthetic OcrBlock for the modal
+      const syntheticBlock: OcrBlock = {
+        block_id: idx,
+        block_label: 'text',
+        block_content: texts[idx] || '',
+        block_bbox: bbox,
+        block_order: idx,
+        group_id: 0,
+      };
+      setSelectedBlock(syntheticBlock);
+    };
 
     return (
       <div className="blocks-list">
@@ -1233,9 +2062,11 @@ function OcrPage() {
           texts.map((text, idx) => (
             <div
               key={idx}
-              className={`block-item ${hoveredBlockId === idx ? 'highlighted' : ''}`}
+              className={`block-item text ${hoveredBlockId === idx ? 'highlighted' : ''}`}
               onMouseEnter={() => setHoveredBlockId(idx)}
               onMouseLeave={() => setHoveredBlockId(null)}
+              onClick={() => handleV5BlockClick(idx)}
+              style={{ cursor: 'pointer' }}
             >
               <div className="block-header">
                 <span className="block-label text">text</span>
@@ -1259,14 +2090,423 @@ function OcrPage() {
   };
 
   const renderV5MarkdownView = (data: OcrV5ResultData) => {
-    const texts = data.rec_texts || [];
-    const markdown = texts.join('\n');
+    const job = currentJob || jobs.find((j) => j.id === processingJobId);
+    const filename = job?.filename?.replace(/\.[^/.]+$/, '') || 'ocr_result';
+
+    // Use edited markdown from job if available, otherwise generate
+    const generatedMarkdown = generateV5Markdown(data);
+    const displayContent = job?.editedMarkdown || generatedMarkdown;
+
+    const handleMarkdownChange = (content: string) => {
+      if (job) {
+        updateJob(job.id, { editedMarkdown: content });
+      }
+    };
 
     return (
-      <div className="rendered-view">
-        <pre style={{ whiteSpace: 'pre-wrap', fontFamily: 'inherit' }}>
-          {markdown}
-        </pre>
+      <div className="view-with-toolbar">
+        <div className="view-toolbar">
+          <button
+            className={`btn btn-sm ${isMarkdownEditMode ? 'btn-primary' : 'btn-outline'}`}
+            onClick={() => setIsMarkdownEditMode(!isMarkdownEditMode)}
+          >
+            {isMarkdownEditMode ? 'Preview' : 'Edit'}
+          </button>
+          <button
+            className="btn btn-sm btn-outline"
+            onClick={() => copyToClipboard(displayContent)}
+          >
+            Copy
+          </button>
+          <button
+            className="btn btn-sm btn-outline"
+            onClick={() =>
+              downloadFile(displayContent, `${filename}.md`, 'text/markdown')
+            }
+          >
+            Download
+          </button>
+        </div>
+        {isMarkdownEditMode ? (
+          <textarea
+            className="markdown-editor"
+            value={displayContent}
+            onChange={(e) => handleMarkdownChange(e.target.value)}
+            spellCheck={false}
+          />
+        ) : (
+          <div className="markdown-view">
+            <ReactMarkdown
+              remarkPlugins={[remarkBreaks]}
+              rehypePlugins={[rehypeRaw]}
+            >
+              {displayContent}
+            </ReactMarkdown>
+          </div>
+        )}
+      </div>
+    );
+  };
+
+  // Helper to convert \n to <br> for HTML rendering
+  const nl2br = (text: string): string => {
+    return text.replace(/\n/g, '<br>');
+  };
+
+  // Generate HTML content from blocks for TipTap
+  const generateDocumentHTML = useCallback(
+    (
+      blocks: OcrBlock[],
+      structData: OcrStructureResultData,
+      croppedImages: Map<number, string>,
+    ): string => {
+      const visualBlockTypes = [
+        'image',
+        'picture',
+        'figure',
+        'chart',
+        'seal',
+        'stamp',
+      ];
+
+      return blocks
+        .map((block) => {
+          // Skip empty non-visual blocks
+          if (
+            !block.block_content?.trim() &&
+            !visualBlockTypes.includes(block.block_label)
+          ) {
+            return '';
+          }
+
+          // Visual blocks - always insert cropped image with original bbox size
+          if (visualBlockTypes.includes(block.block_label)) {
+            const croppedSrc = croppedImages.get(block.block_id);
+            if (croppedSrc) {
+              const [x1, , x2] = block.block_bbox;
+              const width = x2 - x1;
+              const caption = block.block_content?.trim();
+              // Use img with width attribute (CustomImage extension preserves this)
+              let html = `<img src="${croppedSrc}" alt="${block.block_label} #${block.block_id}" width="${width}" />`;
+              if (caption) {
+                html += `<p><em>${nl2br(caption)}</em></p>`;
+              }
+              return html;
+            }
+            return `<p><em>[${block.block_label.toUpperCase()}: Block #${block.block_id}]</em></p>`;
+          }
+
+          const content = block.block_content;
+
+          // Render by block type
+          switch (block.block_label) {
+            case 'doc_title':
+              return `<h1>${nl2br(content)}</h1>`;
+            case 'paragraph_title':
+              return `<h2>${nl2br(content)}</h2>`;
+            case 'table':
+              return content; // Already HTML
+            case 'formula':
+            case 'formula_number':
+              return `<blockquote><code>${nl2br(content)}</code></blockquote>`;
+            case 'header':
+              return `<p><strong>${nl2br(content)}</strong></p>`;
+            case 'footer':
+              return `<p><small>${nl2br(content)}</small></p>`;
+            case 'footnotes':
+            case 'references':
+              return `<blockquote>${nl2br(content)}</blockquote>`;
+            default:
+              return `<p>${nl2br(content)}</p>`;
+          }
+        })
+        .filter((content) => content)
+        .join('');
+    },
+    [],
+  );
+
+  // Generate HTML content from V5 data for TipTap
+  const generateV5DocumentHTML = useCallback(
+    (data: OcrV5ResultData): string => {
+      const texts = data.rec_texts || [];
+      if (texts.length === 0) {
+        return '<p><em>No text detected</em></p>';
+      }
+      return texts.map((text) => `<p>${nl2br(text)}</p>`).join('');
+    },
+    [],
+  );
+
+  // State for cropped images
+  const [croppedImagesMap, setCroppedImagesMap] = useState<Map<number, string>>(
+    new Map(),
+  );
+  const [croppedImagesReady, setCroppedImagesReady] = useState(false);
+  const lastProcessedBlocksRef = useRef<string>('');
+
+  // Generate cropped images from blocks
+  const generateCroppedImages = useCallback(
+    (
+      blocks: OcrBlock[],
+      structData: OcrStructureResultData,
+      imgElement: HTMLImageElement | null,
+    ): Map<number, string> => {
+      const visualBlockTypes = [
+        'image',
+        'picture',
+        'figure',
+        'chart',
+        'seal',
+        'stamp',
+      ];
+
+      if (!imgElement || !imgElement.complete || imgElement.naturalWidth === 0) {
+        return new Map();
+      }
+
+      if (!structData.width || !structData.height) {
+        return new Map();
+      }
+
+      const visualBlocks = blocks.filter((block) =>
+        visualBlockTypes.includes(block.block_label),
+      );
+
+      if (visualBlocks.length === 0) {
+        return new Map();
+      }
+
+      const result = new Map<number, string>();
+
+      visualBlocks.forEach((block) => {
+        try {
+          const [x1, y1, x2, y2] = block.block_bbox;
+          const canvas = document.createElement('canvas');
+          const ctx = canvas.getContext('2d');
+          if (!ctx) return;
+
+          // Scale factor from original image dimensions
+          const scaleX = imgElement.naturalWidth / structData.width;
+          const scaleY = imgElement.naturalHeight / structData.height;
+
+          // Crop dimensions
+          const cropX = x1 * scaleX;
+          const cropY = y1 * scaleY;
+          const cropW = (x2 - x1) * scaleX;
+          const cropH = (y2 - y1) * scaleY;
+
+          canvas.width = cropW;
+          canvas.height = cropH;
+
+          ctx.drawImage(
+            imgElement,
+            cropX,
+            cropY,
+            cropW,
+            cropH,
+            0,
+            0,
+            cropW,
+            cropH,
+          );
+
+          const dataUrl = canvas.toDataURL('image/jpeg', 0.85);
+          result.set(block.block_id, dataUrl);
+        } catch (e) {
+          console.error(
+            'Failed to crop image for block',
+            block.block_id,
+            e,
+          );
+        }
+      });
+
+      return result;
+    },
+    [],
+  );
+
+  // Document view for Structure/VL format
+  const renderDocumentView = (
+    blocks: OcrBlock[],
+    structData: OcrStructureResultData,
+  ) => {
+    const job = currentJob || jobs.find((j) => j.id === processingJobId);
+    const filename = job?.filename || 'document';
+
+    // Check if there are visual blocks that need cropping
+    const visualBlockTypes = [
+      'image',
+      'picture',
+      'figure',
+      'chart',
+      'seal',
+      'stamp',
+    ];
+    const hasVisualBlocks = blocks.some((block) =>
+      visualBlockTypes.includes(block.block_label),
+    );
+
+    // Generate cropped images if not already done for these blocks + image
+    const blocksKey = `${loadedImageUrl}:${blocks.map((b) => b.block_id).join(',')}`;
+    const imgElement = resultImageRef.current;
+    const imageIsReady =
+      imgElement &&
+      imgElement.complete &&
+      imgElement.naturalWidth > 0 &&
+      loadedImageUrl === previewUrl;
+
+    if (
+      hasVisualBlocks &&
+      imageIsReady &&
+      structData.width &&
+      structData.height &&
+      blocksKey !== lastProcessedBlocksRef.current
+    ) {
+      lastProcessedBlocksRef.current = blocksKey;
+      // Use setTimeout to avoid setState during render
+      setTimeout(() => {
+        try {
+          const croppedMap = generateCroppedImages(blocks, structData, imgElement);
+          setCroppedImagesMap(croppedMap);
+          setCroppedImagesReady(true);
+        } catch (error) {
+          console.error('Failed to generate cropped images:', error);
+          // Still mark as ready so we don't block forever
+          setCroppedImagesReady(true);
+        }
+      }, 0);
+    }
+
+    // If no visual blocks, mark as ready immediately
+    if (!hasVisualBlocks && !croppedImagesReady) {
+      setTimeout(() => setCroppedImagesReady(true), 0);
+    }
+
+    // Use edited content if available, otherwise generate from result
+    const savedHtml = job?.editedDocumentHtml;
+    const savedHtmlHasPlaceholder =
+      savedHtml && savedHtml.includes('[IMAGE:') && hasVisualBlocks;
+
+    // Use edited content if available and valid, otherwise generate from result
+    const htmlContent =
+      savedHtml && !savedHtmlHasPlaceholder
+        ? savedHtml
+        : generateDocumentHTML(blocks, structData, croppedImagesMap);
+
+    const handleDocumentChange = (content: string) => {
+      if (job) {
+        updateJob(job.id, { editedDocumentHtml: content });
+      }
+    };
+
+    return (
+      <div className="document-view">
+        <DocumentEditor
+          initialContent={htmlContent}
+          filename={filename}
+          onContentChange={handleDocumentChange}
+        />
+      </div>
+    );
+  };
+
+  // Document view for PP-OCRv5 format
+  const renderV5DocumentView = (data: OcrV5ResultData) => {
+    const job = currentJob || jobs.find((j) => j.id === processingJobId);
+    const filename = job?.filename || 'document';
+
+    // Use edited content if available, otherwise generate from result
+    const htmlContent = job?.editedDocumentHtml || generateV5DocumentHTML(data);
+
+    const handleDocumentChange = (content: string) => {
+      if (job) {
+        updateJob(job.id, { editedDocumentHtml: content });
+      }
+    };
+
+    return (
+      <div className="document-view">
+        <DocumentEditor
+          initialContent={htmlContent}
+          filename={filename}
+          onContentChange={handleDocumentChange}
+        />
+      </div>
+    );
+  };
+
+  // Toast component
+  const renderToast = () =>
+    toastMessage && <div className="toast">{toastMessage}</div>;
+
+  // Block preview modal
+  const renderBlockPreviewModal = () => {
+    if (!selectedBlock || !previewUrl) return null;
+
+    const [x1, y1, x2, y2] = selectedBlock.block_bbox;
+    const cropWidth = x2 - x1;
+    const cropHeight = y2 - y1;
+
+    return (
+      <div
+        className="block-preview-overlay"
+        onClick={() => setSelectedBlock(null)}
+      >
+        <div
+          className="block-preview-modal"
+          onClick={(e) => e.stopPropagation()}
+        >
+          <div className="block-preview-header">
+            <span className={`block-label ${selectedBlock.block_label}`}>
+              {selectedBlock.block_label}
+            </span>
+            <span className="block-preview-info">
+              Block #{selectedBlock.block_id} | {cropWidth}×{cropHeight}px
+            </span>
+            <button
+              className="block-preview-close"
+              onClick={() => setSelectedBlock(null)}
+            >
+              ×
+            </button>
+          </div>
+          <div className="block-preview-body">
+            <div className="block-preview-image-section">
+              <div className="block-preview-section-label">Original Image</div>
+              <div className="block-preview-image-container">
+                {selectedBlockImage ? (
+                  <img
+                    src={selectedBlockImage}
+                    alt={`${selectedBlock.block_label} block preview`}
+                    className="block-preview-image"
+                  />
+                ) : (
+                  <div className="block-preview-loading">Loading image...</div>
+                )}
+              </div>
+            </div>
+            <div className="block-preview-text-section">
+              <div className="block-preview-section-label">OCR Result</div>
+              <div className="block-preview-text-content">
+                {selectedBlock.block_content?.trim() ? (
+                  selectedBlock.block_label === 'table' ? (
+                    <div
+                      dangerouslySetInnerHTML={{
+                        __html: selectedBlock.block_content,
+                      }}
+                    />
+                  ) : (
+                    <pre>{selectedBlock.block_content}</pre>
+                  )
+                ) : (
+                  <div className="block-preview-no-text">No text content</div>
+                )}
+              </div>
+            </div>
+          </div>
+        </div>
       </div>
     );
   };
@@ -1283,19 +2523,31 @@ function OcrPage() {
             This may take a few moments...
           </div>
         </div>
+        {renderBlockPreviewModal()}
+        {renderToast()}
       </>
     );
   }
 
   // Render based on step
-  switch (step) {
-    case 'upload':
-      return renderUploadStep();
-    case 'options':
-      return renderOptionsStep();
-    case 'result':
-      return renderResultStep();
-    default:
-      return renderUploadStep();
-  }
+  const renderContent = () => {
+    switch (step) {
+      case 'upload':
+        return renderUploadStep();
+      case 'options':
+        return renderOptionsStep();
+      case 'result':
+        return renderResultStep();
+      default:
+        return renderUploadStep();
+    }
+  };
+
+  return (
+    <>
+      {renderContent()}
+      {renderBlockPreviewModal()}
+      {renderToast()}
+    </>
+  );
 }

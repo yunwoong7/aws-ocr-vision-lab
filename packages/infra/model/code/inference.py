@@ -282,6 +282,7 @@ def predict_fn(input_data, _):
     output_key = input_data.get("output_key")
     model_name = input_data.get("model", "paddleocr-vl")
     model_options = input_data.get("model_options", {})
+    metadata = input_data.get("metadata", {})
 
     if not s3_uri:
         raise ValueError("s3_uri is required")
@@ -306,6 +307,11 @@ def predict_fn(input_data, _):
 
         # Format output
         output = ocr_model.format_output(results, output_format="markdown")
+
+        # Add metadata and model info to output
+        output["model"] = model_name
+        output["model_options"] = model_options
+        output["metadata"] = metadata
 
         # Upload result to S3
         if output_key:

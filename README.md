@@ -20,7 +20,11 @@
 </p>
 
 <p align="center">
-  <strong>English</strong> | <a href="README_ko.md">한국어</a>
+  <strong>English</strong> | <a href="docs/README_ko.md">한국어</a> | <a href="docs/README_ja.md">日本語</a>
+</p>
+
+<p align="center">
+  <a href="docs/demo.md"><strong>View Demo</strong></a>
 </p>
 
 <p align="center">
@@ -49,6 +53,8 @@ OCR Vision Lab is a web-based playground for testing and experimenting with [Pad
   - **PaddleOCR-VL**: Vision-language model for complex document understanding
 
 - **Rich Language Support**: 80+ languages including Korean, English, Chinese, Japanese, and more
+
+- **Supported File Formats**: PNG, JPEG, TIFF, PDF (up to 100MB)
 
 - **Interactive Result Viewer**
   - Zoom and pan controls for detailed inspection

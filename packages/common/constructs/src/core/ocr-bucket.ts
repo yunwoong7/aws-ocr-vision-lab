@@ -59,6 +59,11 @@ export class OcrBucket extends Construct {
           expiration: Duration.days(7),
         },
         {
+          id: 'DeleteUploadsAfter30Days',
+          prefix: 'uploads/',
+          expiration: Duration.days(30),
+        },
+        {
           id: 'DeleteOutputAfter30Days',
           prefix: 'output/',
           expiration: Duration.days(30),

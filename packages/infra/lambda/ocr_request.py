@@ -47,15 +47,17 @@ def handler(event, context):
 
         body = json.loads(event["body"])
         image_base64 = body.get("image_base64")
+        s3_key = body.get("s3_key")  # For large file uploads via presigned URL
         filename = body.get("filename")
         model = body.get("model", "paddleocr-vl")
         options = body.get("options", {})
 
-        if not image_base64 or not filename:
+        # Either image_base64 or s3_key is required
+        if not filename or (not image_base64 and not s3_key):
             return {
                 "statusCode": 400,
                 "headers": {"Content-Type": "application/json", **CORS_HEADERS},
-                "body": json.dumps({"error": "image_base64 and filename are required"}),
+                "body": json.dumps({"error": "filename and (image_base64 or s3_key) are required"}),
             }
 
         # Get user ID from Cognito claims
@@ -64,27 +66,40 @@ def handler(event, context):
         user_id = claims.get("sub", "anonymous")
 
         job_id = str(uuid.uuid4())
-        input_key = f"input/{user_id}/{job_id}/{filename}"
         output_key = f"output/{user_id}/{job_id}/result.json"
 
-        # Decode base64 and upload to S3
-        image_buffer = base64.b64decode(image_base64)
+        # Determine input key based on upload method
+        if s3_key:
+            # File was uploaded via presigned URL - use existing S3 key
+            input_key = s3_key
+            print(f"Using pre-uploaded file: s3://{BUCKET_NAME}/{input_key}")
+        else:
+            # File sent as base64 - decode and upload
+            input_key = f"input/{user_id}/{job_id}/{filename}"
+            image_buffer = base64.b64decode(image_base64)
 
-        s3.put_object(
-            Bucket=BUCKET_NAME,
-            Key=input_key,
-            Body=image_buffer,
-            ContentType=get_content_type(filename),
-        )
+            s3.put_object(
+                Bucket=BUCKET_NAME,
+                Key=input_key,
+                Body=image_buffer,
+                ContentType=get_content_type(filename),
+            )
+            print(f"Image uploaded to s3://{BUCKET_NAME}/{input_key}")
 
-        print(f"Image uploaded to s3://{BUCKET_NAME}/{input_key}")
-
-        # Prepare SageMaker input with model selection
+        # Prepare SageMaker input with model selection and metadata
+        from datetime import datetime
         sagemaker_input = json.dumps({
             "s3_uri": f"s3://{BUCKET_NAME}/{input_key}",
             "output_key": output_key,
             "model": model,
             "model_options": options,
+            # Metadata for job listing
+            "metadata": {
+                "job_id": job_id,
+                "filename": filename,
+                "s3_key": input_key,
+                "created_at": datetime.utcnow().isoformat() + "Z",
+            }
         })
 
         # Upload inference input to S3
