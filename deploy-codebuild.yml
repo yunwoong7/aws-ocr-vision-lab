@@ -146,7 +146,7 @@ Resources:
                 # Build all dependencies (required for CDK synthesis)
                 - echo "Building dependencies..."
                 - pnpm nx run @aws-ocr-vision-lab/common-constructs:compile
-                - pnpm nx run @aws-ocr-vision-lab/frontend:build
+                - pnpm nx run @aws-ocr-vision-lab/frontend:bundle:production
 
                 # Bootstrap CDK if needed (both main region and us-east-1 for WAF/CloudFront)
                 - |
