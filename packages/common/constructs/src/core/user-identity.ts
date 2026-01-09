@@ -81,7 +81,7 @@ export class UserIdentity extends Construct {
       signInCaseSensitive: false,
       signInAliases: { username: true, email: true },
       accountRecovery: AccountRecovery.EMAIL_ONLY,
-      selfSignUpEnabled: false,
+      selfSignUpEnabled: true,
       standardAttributes: {
         phoneNumber: { required: false },
         email: { required: true },
