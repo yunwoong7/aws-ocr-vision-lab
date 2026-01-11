@@ -19,14 +19,17 @@ export class OcrBucket extends Construct {
   constructor(scope: Construct, id: string, props: OcrBucketProps = {}) {
     super(scope, id);
 
+    const removalPolicy = props.removalPolicy ?? RemovalPolicy.DESTROY;
+    const autoDelete = removalPolicy === RemovalPolicy.DESTROY;
+
     // Access log bucket
     const accessLogBucket = new Bucket(this, 'AccessLogBucket', {
       encryption: BucketEncryption.S3_MANAGED,
       blockPublicAccess: BlockPublicAccess.BLOCK_ALL,
       objectOwnership: ObjectOwnership.BUCKET_OWNER_PREFERRED,
       enforceSSL: true,
-      removalPolicy: props.removalPolicy ?? RemovalPolicy.DESTROY,
-      autoDeleteObjects: props.removalPolicy === RemovalPolicy.DESTROY,
+      removalPolicy,
+      autoDeleteObjects: autoDelete,
       lifecycleRules: [
         {
           id: 'DeleteAccessLogsAfter90Days',
@@ -50,8 +53,8 @@ export class OcrBucket extends Construct {
       versioned: true,
       serverAccessLogsBucket: accessLogBucket,
       serverAccessLogsPrefix: 'ocr-bucket-logs/',
-      removalPolicy: props.removalPolicy ?? RemovalPolicy.DESTROY,
-      autoDeleteObjects: props.removalPolicy === RemovalPolicy.DESTROY,
+      removalPolicy,
+      autoDeleteObjects: autoDelete,
       lifecycleRules: [
         {
           id: 'DeleteInputAfter7Days',
