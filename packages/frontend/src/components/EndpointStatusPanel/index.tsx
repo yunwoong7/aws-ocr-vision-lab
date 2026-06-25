@@ -90,31 +90,41 @@ export const EndpointStatusPanel: React.FC = () => {
           const isPending = pending.has(status.family);
           const isTransitioning = status.endpointStatus !== 'InService';
           const isBusy = isPending || isTransitioning;
-          const light = isPending ? 'yellow' : status.light;
+          // Yellow whenever powering up/down or mid-transition.
+          const light = isPending || isTransitioning ? 'yellow' : status.light;
+          // Show the slow-start hint while it's coming up (turning on, not off).
+          const isStarting =
+            light === 'yellow' && (status.enabled || isPending);
           return (
-            <button
-              key={status.family}
-              type="button"
-              className="endpoint-status-row"
-              onClick={() => handleToggle(status)}
-              disabled={isBusy}
-              title={
-                isTransitioning
-                  ? `${familyTitle} is ${status.endpointStatus}… please wait`
-                  : status.enabled
-                    ? `${familyTitle} is ${LIGHT_LABEL[light]} — click to turn off`
-                    : `${familyTitle} is off — click to turn on`
-              }
-            >
-              <span
-                className="endpoint-status-dot"
-                style={{ background: LIGHT_COLOR[light] }}
-              />
-              <span className="endpoint-status-name">{familyTitle}</span>
-              <span className="endpoint-status-state">
-                {isPending ? '…' : LIGHT_LABEL[status.light]}
-              </span>
-            </button>
+            <div key={status.family} className="endpoint-status-item">
+              <button
+                type="button"
+                className="endpoint-status-row"
+                onClick={() => handleToggle(status)}
+                disabled={isBusy}
+                title={
+                  isTransitioning
+                    ? `${familyTitle} is ${status.endpointStatus}… please wait`
+                    : status.enabled
+                      ? `${familyTitle} is ${LIGHT_LABEL[light]} — click to turn off`
+                      : `${familyTitle} is off — click to turn on`
+                }
+              >
+                <span
+                  className="endpoint-status-dot"
+                  style={{ background: LIGHT_COLOR[light] }}
+                />
+                <span className="endpoint-status-name">{familyTitle}</span>
+                <span className="endpoint-status-state">
+                  {light === 'yellow' ? 'Starting…' : LIGHT_LABEL[status.light]}
+                </span>
+              </button>
+              {isStarting && (
+                <div className="endpoint-status-hint">
+                  Powering up the GPU — this can take a few minutes.
+                </div>
+              )}
+            </div>
           );
         })}
       </div>
