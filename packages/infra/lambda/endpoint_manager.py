@@ -26,11 +26,16 @@ logger.setLevel(logging.INFO)
 
 REGION = os.environ.get("REGION") or os.environ.get("AWS_DEFAULT_REGION", "us-east-1")
 
-# family -> endpoint name (provided by CDK). Families with no endpoint are skipped.
+# endpoint-family -> endpoint name (provided by CDK). Families with no endpoint
+# are skipped. Qwen 4B/8B are separate endpoints so each is its own key; the
+# frontend groups them under one "Qwen3-VL" model family for selection but
+# toggles each endpoint independently.
 ENDPOINTS_BY_FAMILY = {
     "paddleocr": os.environ.get("PADDLE_ENDPOINT_NAME", ""),
     "unlimited-ocr": os.environ.get("UNLIMITED_ENDPOINT_NAME", ""),
     "glm-ocr": os.environ.get("GLM_ENDPOINT_NAME", ""),
+    "qwen3-vl-4b": os.environ.get("QWEN4B_ENDPOINT_NAME", ""),
+    "qwen3-vl-8b": os.environ.get("QWEN8B_ENDPOINT_NAME", ""),
 }
 
 # Max instances when ON (matches the CDK scalable-target max).

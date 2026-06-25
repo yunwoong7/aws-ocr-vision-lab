@@ -45,6 +45,18 @@ const MODEL_ARTIFACTS: ModelArtifact[] = [
     codePath: '../../model/glm/inference.py',
     outputKey: 'model/glm-model.tar.gz',
   },
+  // Qwen3-VL 4B/8B share one inference.py but each endpoint needs its own
+  // model.tar.gz (the size is set by the container's baked-in weights).
+  {
+    id: 'Qwen4b',
+    codePath: '../../model/qwen/inference.py',
+    outputKey: 'model/qwen3vl-4b-model.tar.gz',
+  },
+  {
+    id: 'Qwen8b',
+    codePath: '../../model/qwen/inference.py',
+    outputKey: 'model/qwen3vl-8b-model.tar.gz',
+  },
 ];
 
 export class ModelStack extends Stack {
@@ -54,6 +66,9 @@ export class ModelStack extends Stack {
   public readonly unlimitedModelDataUrl: string;
   /** s3:// URL for the GLM-OCR model.tar.gz */
   public readonly glmModelDataUrl: string;
+  /** s3:// URLs for the Qwen3-VL model.tar.gz (4B / 8B) */
+  public readonly qwen4bModelDataUrl: string;
+  public readonly qwen8bModelDataUrl: string;
 
   constructor(scope: Construct, id: string, props: ModelStackProps) {
     super(scope, id, props);
@@ -104,5 +119,7 @@ export class ModelStack extends Stack {
     this.modelDataUrl = urls['Paddle'];
     this.unlimitedModelDataUrl = urls['Unlimited'];
     this.glmModelDataUrl = urls['Glm'];
+    this.qwen4bModelDataUrl = urls['Qwen4b'];
+    this.qwen8bModelDataUrl = urls['Qwen8b'];
   }
 }

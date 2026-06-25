@@ -31,6 +31,9 @@ export interface OcrApiProps {
   unlimitedEndpointName: string;
   /** GLM-OCR family SageMaker endpoint name */
   glmEndpointName: string;
+  /** Qwen3-VL 4B / 8B SageMaker endpoint names */
+  qwen4bEndpointName: string;
+  qwen8bEndpointName: string;
   lambdaCodePath: string;
 }
 
@@ -102,6 +105,8 @@ export class OcrApi extends Construct {
         PADDLE_ENDPOINT_NAME: props.paddleEndpointName,
         UNLIMITED_ENDPOINT_NAME: props.unlimitedEndpointName,
         GLM_ENDPOINT_NAME: props.glmEndpointName,
+        QWEN4B_ENDPOINT_NAME: props.qwen4bEndpointName,
+        QWEN8B_ENDPOINT_NAME: props.qwen8bEndpointName,
         REGION: region,
       },
     });
@@ -165,6 +170,8 @@ export class OcrApi extends Construct {
         PADDLE_ENDPOINT_NAME: props.paddleEndpointName,
         UNLIMITED_ENDPOINT_NAME: props.unlimitedEndpointName,
         GLM_ENDPOINT_NAME: props.glmEndpointName,
+        QWEN4B_ENDPOINT_NAME: props.qwen4bEndpointName,
+        QWEN8B_ENDPOINT_NAME: props.qwen8bEndpointName,
       },
     });
 
@@ -184,6 +191,8 @@ export class OcrApi extends Construct {
           `arn:aws:sagemaker:${region}:${account}:endpoint/${props.paddleEndpointName}`,
           `arn:aws:sagemaker:${region}:${account}:endpoint/${props.unlimitedEndpointName}`,
           `arn:aws:sagemaker:${region}:${account}:endpoint/${props.glmEndpointName}`,
+          `arn:aws:sagemaker:${region}:${account}:endpoint/${props.qwen4bEndpointName}`,
+          `arn:aws:sagemaker:${region}:${account}:endpoint/${props.qwen8bEndpointName}`,
         ],
       }),
     );

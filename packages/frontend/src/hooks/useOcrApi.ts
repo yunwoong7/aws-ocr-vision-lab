@@ -6,6 +6,7 @@ import {
   OcrRun,
   OcrModel,
   OcrFamily,
+  EndpointFamily,
   ModelOptions,
   EndpointStatus,
 } from '../types/ocr';
@@ -24,7 +25,7 @@ export interface UseOcrApiReturn {
   ) => Promise<OcrRun['result'] | null>;
   fetchEndpointStatus: () => Promise<EndpointStatus[]>;
   setEndpointPower: (
-    family: OcrFamily,
+    family: EndpointFamily,
     enabled: boolean,
   ) => Promise<EndpointStatus | null>;
 }
@@ -200,7 +201,7 @@ export function useOcrApi(): UseOcrApiReturn {
 
   const setEndpointPower = useCallback(
     async (
-      family: OcrFamily,
+      family: EndpointFamily,
       enabled: boolean,
     ): Promise<EndpointStatus | null> => {
       if (!apiUrl || !auth.user?.id_token) return null;

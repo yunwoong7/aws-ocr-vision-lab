@@ -27,9 +27,10 @@ import {
   OcrStructureResultData,
   ResultViewTab,
   ModelOptions,
-  FAMILY_INFO,
+  MODEL_INFO,
   getDefaultOptionsForModel,
   getFamilyForModel,
+  getEndpointFamilyForModel,
   isOcrV5Result,
   isStructureResult,
 } from '../types/ocr';
@@ -748,24 +749,24 @@ function OcrPage() {
   // on, and let them proceed (the request queues until the instance is ready).
   // Returns true if OK to proceed, false if the user cancelled.
   const ensureEndpointOn = useCallback(async (): Promise<boolean> => {
-    const family = getFamilyForModel(selectedModel);
+    const endpointFamily = getEndpointFamilyForModel(selectedModel);
     const statuses = await fetchEndpointStatus();
-    const status = statuses.find((s) => s.family === family);
+    const status = statuses.find((s) => s.family === endpointFamily);
     // Proceed without prompting if status is unknown, already powered on
     // (MinCapacity>=1), or already serving (green). Only prompt when truly off.
     if (!status || status.enabled || status.light === 'green') return true;
 
-    const familyTitle = FAMILY_INFO[family]?.title ?? family;
+    const modelTitle = MODEL_INFO[selectedModel]?.title ?? selectedModel;
     const proceed = await confirm({
-      title: `Turn on ${familyTitle}?`,
+      title: `Turn on ${modelTitle}?`,
       message:
-        `The "${familyTitle}" model is currently off to save GPU cost. ` +
+        `The "${modelTitle}" model is currently off to save GPU cost. ` +
         `Turn it on and run now? Powering up the GPU can take a few minutes ` +
         `before the result is ready.`,
       confirmLabel: 'Turn on & run',
     });
     if (!proceed) return false;
-    await setEndpointPower(family, true);
+    await setEndpointPower(endpointFamily, true);
     return true;
   }, [selectedModel, fetchEndpointStatus, setEndpointPower, confirm]);
 

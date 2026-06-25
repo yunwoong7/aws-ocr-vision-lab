@@ -1,11 +1,20 @@
 import React, { useCallback, useEffect, useRef, useState } from 'react';
 import { useOcrApi } from '../../hooks/useOcrApi';
-import { EndpointStatus, OcrFamily, FAMILY_INFO } from '../../types/ocr';
+import { EndpointStatus, EndpointFamily } from '../../types/ocr';
 
 // Poll endpoint status every 10s, and faster (3s) while any endpoint is
 // transitioning, so the light flips to green shortly after it comes up.
 const IDLE_POLL_MS = 10000;
 const BUSY_POLL_MS = 3000;
+
+// Display label per endpoint family (endpoints, not UI model families).
+const FAMILY_LABEL: Record<EndpointFamily, string> = {
+  paddleocr: 'PaddleOCR',
+  'unlimited-ocr': 'Unlimited-OCR',
+  'glm-ocr': 'GLM-OCR',
+  'qwen3-vl-4b': 'Qwen3-VL 4B',
+  'qwen3-vl-8b': 'Qwen3-VL 8B',
+};
 
 const LIGHT_COLOR: Record<EndpointStatus['light'], string> = {
   green: '#22c55e',
@@ -27,7 +36,7 @@ const LIGHT_LABEL: Record<EndpointStatus['light'], string> = {
 export const EndpointStatusPanel: React.FC = () => {
   const { fetchEndpointStatus, setEndpointPower } = useOcrApi();
   const [statuses, setStatuses] = useState<EndpointStatus[]>([]);
-  const [pending, setPending] = useState<Set<OcrFamily>>(new Set());
+  const [pending, setPending] = useState<Set<EndpointFamily>>(new Set());
   const timerRef = useRef<ReturnType<typeof setTimeout> | null>(null);
 
   const refresh = useCallback(async () => {
@@ -85,8 +94,7 @@ export const EndpointStatusPanel: React.FC = () => {
       <div className="sidebar-section-title">Models (GPU)</div>
       <div className="endpoint-status-list">
         {statuses.map((status) => {
-          const familyTitle =
-            FAMILY_INFO[status.family]?.title ?? status.family;
+          const familyTitle = FAMILY_LABEL[status.family] ?? status.family;
           const isPending = pending.has(status.family);
           const isTransitioning = status.endpointStatus !== 'InService';
           const isBusy = isPending || isTransitioning;

@@ -17,14 +17,19 @@ BUCKET_NAME = os.environ["BUCKET_NAME"]
 PADDLE_ENDPOINT_NAME = os.environ["PADDLE_ENDPOINT_NAME"]
 UNLIMITED_ENDPOINT_NAME = os.environ["UNLIMITED_ENDPOINT_NAME"]
 GLM_ENDPOINT_NAME = os.environ.get("GLM_ENDPOINT_NAME", "")
+QWEN4B_ENDPOINT_NAME = os.environ.get("QWEN4B_ENDPOINT_NAME", "")
+QWEN8B_ENDPOINT_NAME = os.environ.get("QWEN8B_ENDPOINT_NAME", "")
 MAX_FILE_SIZE = 100 * 1024 * 1024  # 100MB
 
 # Map model family -> SageMaker endpoint. The frontend sends `family`; we fall
 # back to inferring it from the model id so older clients still work.
+# Qwen 4B/8B are separate endpoints, so each size is its own "family".
 ENDPOINT_BY_FAMILY = {
     "paddleocr": PADDLE_ENDPOINT_NAME,
     "unlimited-ocr": UNLIMITED_ENDPOINT_NAME,
     "glm-ocr": GLM_ENDPOINT_NAME,
+    "qwen3-vl-4b": QWEN4B_ENDPOINT_NAME,
+    "qwen3-vl-8b": QWEN8B_ENDPOINT_NAME,
 }
 FAMILY_BY_MODEL = {
     "pp-ocrv5": "paddleocr",
@@ -33,6 +38,8 @@ FAMILY_BY_MODEL = {
     "gundam": "unlimited-ocr",
     "base": "unlimited-ocr",
     "glm-ocr": "glm-ocr",
+    "qwen3-vl-4b": "qwen3-vl-4b",
+    "qwen3-vl-8b": "qwen3-vl-8b",
 }
 
 s3 = boto3.client("s3", region_name=REGION)

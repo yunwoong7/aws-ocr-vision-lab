@@ -15,6 +15,8 @@ export interface ApiStackProps extends StackProps {
   paddleEndpointName: string;
   unlimitedEndpointName: string;
   glmEndpointName: string;
+  qwen4bEndpointName: string;
+  qwen8bEndpointName: string;
 }
 
 export class ApiStack extends Stack {
@@ -29,6 +31,8 @@ export class ApiStack extends Stack {
       paddleEndpointName: props.paddleEndpointName,
       unlimitedEndpointName: props.unlimitedEndpointName,
       glmEndpointName: props.glmEndpointName,
+      qwen4bEndpointName: props.qwen4bEndpointName,
+      qwen8bEndpointName: props.qwen8bEndpointName,
       lambdaCodePath: path.join(__dirname, '../../lambda'),
     });
 
