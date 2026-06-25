@@ -30,6 +30,7 @@ REGION = os.environ.get("REGION") or os.environ.get("AWS_DEFAULT_REGION", "us-ea
 ENDPOINTS_BY_FAMILY = {
     "paddleocr": os.environ.get("PADDLE_ENDPOINT_NAME", ""),
     "unlimited-ocr": os.environ.get("UNLIMITED_ENDPOINT_NAME", ""),
+    "glm-ocr": os.environ.get("GLM_ENDPOINT_NAME", ""),
 }
 
 # Max instances when ON (matches the CDK scalable-target max).

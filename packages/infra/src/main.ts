@@ -78,6 +78,29 @@ const unlimitedEndpointStack = new EndpointStack(
 );
 unlimitedEndpointStack.addDependency(modelStack);
 
+// GlmEndpointStack: GLM-OCR SageMaker Endpoint (separate transformers-git runtime)
+// instanceType override: `cdk deploy --context glmInstanceType=ml.g5.2xlarge`
+const glmInstanceType = app.node.tryGetContext('glmInstanceType') as
+  | string
+  | undefined;
+const glmEndpointStack = new EndpointStack(app, 'AwsOcrLab-GlmEndpoint', {
+  env,
+  bucket: infraStack.bucket,
+  imageUri: infraStack.glmImageUri,
+  modelDataUrl: modelStack.glmModelDataUrl,
+  instanceType: glmInstanceType,
+  // transformers-based container; SageMaker needs SAGEMAKER_PROGRAM to locate
+  // inference.py inside model.tar.gz.
+  environment: {
+    SAGEMAKER_PROGRAM: 'inference.py',
+    SAGEMAKER_MODEL_SERVER_TIMEOUT: '600',
+    SAGEMAKER_MODEL_SERVER_WORKERS: '1',
+    TS_DEFAULT_RESPONSE_TIMEOUT: '600',
+    TS_MAX_RESPONSE_SIZE: '104857600',
+  },
+});
+glmEndpointStack.addDependency(modelStack);
+
 // ApiStack: API Gateway + Lambda
 const apiStack = new ApiStack(app, 'AwsOcrLab-Api', {
   env,
@@ -85,10 +108,12 @@ const apiStack = new ApiStack(app, 'AwsOcrLab-Api', {
   bucket: infraStack.bucket,
   paddleEndpointName: endpointStack.endpointName,
   unlimitedEndpointName: unlimitedEndpointStack.endpointName,
+  glmEndpointName: glmEndpointStack.endpointName,
 });
 apiStack.addDependency(identityStack);
 apiStack.addDependency(endpointStack);
 apiStack.addDependency(unlimitedEndpointStack);
+apiStack.addDependency(glmEndpointStack);
 
 // FrontendStack: CloudFront + S3
 const frontendStack = new FrontendStack(app, 'AwsOcrLab-Frontend', {

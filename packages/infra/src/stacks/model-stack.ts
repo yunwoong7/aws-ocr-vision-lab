@@ -40,6 +40,11 @@ const MODEL_ARTIFACTS: ModelArtifact[] = [
     codePath: '../../model/unlimited/inference.py',
     outputKey: 'model/unlimited-model.tar.gz',
   },
+  {
+    id: 'Glm',
+    codePath: '../../model/glm/inference.py',
+    outputKey: 'model/glm-model.tar.gz',
+  },
 ];
 
 export class ModelStack extends Stack {
@@ -47,6 +52,8 @@ export class ModelStack extends Stack {
   public readonly modelDataUrl: string;
   /** s3:// URL for the Unlimited-OCR model.tar.gz */
   public readonly unlimitedModelDataUrl: string;
+  /** s3:// URL for the GLM-OCR model.tar.gz */
+  public readonly glmModelDataUrl: string;
 
   constructor(scope: Construct, id: string, props: ModelStackProps) {
     super(scope, id, props);
@@ -96,5 +103,6 @@ export class ModelStack extends Stack {
 
     this.modelDataUrl = urls['Paddle'];
     this.unlimitedModelDataUrl = urls['Unlimited'];
+    this.glmModelDataUrl = urls['Glm'];
   }
 }

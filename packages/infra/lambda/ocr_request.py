@@ -16,6 +16,7 @@ REGION = os.environ.get("REGION") or os.environ.get("AWS_DEFAULT_REGION", "us-ea
 BUCKET_NAME = os.environ["BUCKET_NAME"]
 PADDLE_ENDPOINT_NAME = os.environ["PADDLE_ENDPOINT_NAME"]
 UNLIMITED_ENDPOINT_NAME = os.environ["UNLIMITED_ENDPOINT_NAME"]
+GLM_ENDPOINT_NAME = os.environ.get("GLM_ENDPOINT_NAME", "")
 MAX_FILE_SIZE = 100 * 1024 * 1024  # 100MB
 
 # Map model family -> SageMaker endpoint. The frontend sends `family`; we fall
@@ -23,6 +24,7 @@ MAX_FILE_SIZE = 100 * 1024 * 1024  # 100MB
 ENDPOINT_BY_FAMILY = {
     "paddleocr": PADDLE_ENDPOINT_NAME,
     "unlimited-ocr": UNLIMITED_ENDPOINT_NAME,
+    "glm-ocr": GLM_ENDPOINT_NAME,
 }
 FAMILY_BY_MODEL = {
     "pp-ocrv5": "paddleocr",
@@ -30,6 +32,7 @@ FAMILY_BY_MODEL = {
     "paddleocr-vl": "paddleocr",
     "gundam": "unlimited-ocr",
     "base": "unlimited-ocr",
+    "glm-ocr": "glm-ocr",
 }
 
 s3 = boto3.client("s3", region_name=REGION)

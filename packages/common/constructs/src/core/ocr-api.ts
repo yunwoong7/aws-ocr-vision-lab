@@ -29,6 +29,8 @@ export interface OcrApiProps {
   paddleEndpointName: string;
   /** Unlimited-OCR family SageMaker endpoint name */
   unlimitedEndpointName: string;
+  /** GLM-OCR family SageMaker endpoint name */
+  glmEndpointName: string;
   lambdaCodePath: string;
 }
 
@@ -99,6 +101,7 @@ export class OcrApi extends Construct {
         BUCKET_NAME: props.bucket.bucketName,
         PADDLE_ENDPOINT_NAME: props.paddleEndpointName,
         UNLIMITED_ENDPOINT_NAME: props.unlimitedEndpointName,
+        GLM_ENDPOINT_NAME: props.glmEndpointName,
         REGION: region,
       },
     });
@@ -161,6 +164,7 @@ export class OcrApi extends Construct {
         REGION: region,
         PADDLE_ENDPOINT_NAME: props.paddleEndpointName,
         UNLIMITED_ENDPOINT_NAME: props.unlimitedEndpointName,
+        GLM_ENDPOINT_NAME: props.glmEndpointName,
       },
     });
 
@@ -179,6 +183,7 @@ export class OcrApi extends Construct {
         resources: [
           `arn:aws:sagemaker:${region}:${account}:endpoint/${props.paddleEndpointName}`,
           `arn:aws:sagemaker:${region}:${account}:endpoint/${props.unlimitedEndpointName}`,
+          `arn:aws:sagemaker:${region}:${account}:endpoint/${props.glmEndpointName}`,
         ],
       }),
     );

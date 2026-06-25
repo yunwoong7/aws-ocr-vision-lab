@@ -1,5 +1,5 @@
 // Model family types
-export type OcrFamily = 'paddleocr' | 'unlimited-ocr';
+export type OcrFamily = 'paddleocr' | 'unlimited-ocr' | 'glm-ocr';
 
 // SageMaker endpoint power status (per family). `light` drives the UI dot:
 //   green = ready, grey = off, yellow = transitioning.
@@ -20,7 +20,8 @@ export type OcrModel =
   | 'pp-structurev3'
   | 'paddleocr-vl'
   | 'gundam'
-  | 'base';
+  | 'base'
+  | 'glm-ocr';
 
 // Supported languages for PP-OCRv5 and PP-StructureV3
 export type OcrLanguage =
@@ -254,11 +255,15 @@ export type PaddleOcrVlOptions = Record<string, never>;
 // the sizing preset is implied by the selected variant.
 export type UnlimitedOcrOptions = Record<string, never>;
 
+// GLM-OCR has no user-facing options (fixed document-parsing prompt).
+export type GlmOcrOptions = Record<string, never>;
+
 export type ModelOptions =
   | PpOcrV5Options
   | PpStructureV3Options
   | PaddleOcrVlOptions
-  | UnlimitedOcrOptions;
+  | UnlimitedOcrOptions
+  | GlmOcrOptions;
 
 // Combined OCR options
 export interface OcrOptions {
@@ -440,6 +445,7 @@ export const DEFAULT_PP_STRUCTUREV3_OPTIONS: PpStructureV3Options = {
 
 export const DEFAULT_PADDLEOCR_VL_OPTIONS: PaddleOcrVlOptions = {};
 export const DEFAULT_UNLIMITED_OCR_OPTIONS: UnlimitedOcrOptions = {};
+export const DEFAULT_GLM_OCR_OPTIONS: GlmOcrOptions = {};
 
 // Option info for UI
 export interface OptionInfo {
@@ -551,6 +557,16 @@ export const MODEL_INFO: Record<OcrModel, ModelMeta> = {
     supportsLanguage: false,
     defaultOptions: DEFAULT_UNLIMITED_OCR_OPTIONS,
   },
+  'glm-ocr': {
+    family: 'glm-ocr',
+    title: 'GLM-OCR',
+    description:
+      'Zhipu GLM-OCR — compact 0.9B multimodal OCR for documents and PDFs',
+    shortLabel: 'GLM',
+    optionInfo: [],
+    supportsLanguage: false,
+    defaultOptions: DEFAULT_GLM_OCR_OPTIONS,
+  },
 };
 
 export const FAMILY_INFO: Record<OcrFamily, FamilyMeta> = {
@@ -567,6 +583,12 @@ export const FAMILY_INFO: Record<OcrFamily, FamilyMeta> = {
     description:
       'Baidu Unlimited-OCR — long-document parsing vision-language model',
     models: ['gundam', 'base'],
+  },
+  'glm-ocr': {
+    id: 'glm-ocr',
+    title: 'GLM-OCR',
+    description: 'Zhipu GLM-OCR — compact 0.9B multimodal OCR model',
+    models: ['glm-ocr'],
   },
 };
 

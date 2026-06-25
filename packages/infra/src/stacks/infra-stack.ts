@@ -10,6 +10,7 @@ import { fileURLToPath } from 'url';
 import {
   PADDLEOCR_DOCKERFILE,
   UNLIMITED_OCR_DOCKERFILE,
+  GLM_OCR_DOCKERFILE,
 } from '../dockerfiles.js';
 
 const __filename = fileURLToPath(import.meta.url);
@@ -19,6 +20,7 @@ export class InfraStack extends Stack {
   public readonly bucket: Bucket;
   public readonly imageUri: string;
   public readonly unlimitedImageUri: string;
+  public readonly glmImageUri: string;
 
   constructor(scope: Construct, id: string, props?: StackProps) {
     super(scope, id, props);
@@ -54,6 +56,15 @@ export class InfraStack extends Stack {
 
     this.unlimitedImageUri = unlimitedImageBuilder.imageUri;
 
+    // GLM-OCR: separate ECR Repository + CodeBuild (transformers-from-git runtime)
+    const glmImageBuilder = new OcrImageBuilder(this, 'GlmImageBuilder', {
+      repositoryName: 'glm-ocr',
+      buildTriggerLambdaPath,
+      dockerfileContent: GLM_OCR_DOCKERFILE,
+    });
+
+    this.glmImageUri = glmImageBuilder.imageUri;
+
     // Export values for other stacks
     new CfnOutput(this, 'BucketName', {
       value: ocrBucket.bucket.bucketName,
@@ -73,6 +84,11 @@ export class InfraStack extends Stack {
     new CfnOutput(this, 'UnlimitedImageUri', {
       value: unlimitedImageBuilder.imageUri,
       exportName: 'AwsOcrLab-UnlimitedImageUri',
+    });
+
+    new CfnOutput(this, 'GlmImageUri', {
+      value: glmImageBuilder.imageUri,
+      exportName: 'AwsOcrLab-GlmImageUri',
     });
   }
 }

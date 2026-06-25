@@ -77,3 +77,42 @@ RUN python -c "from huggingface_hub import snapshot_download; \\
     snapshot_download('baidu/Unlimited-OCR', local_dir='/opt/program/unlimited-ocr-weights')"
 
 EXPOSE 8080`;
+
+// GLM-OCR container — Zhipu GLM-OCR (0.9B CogViT+GLM-0.5B multimodal OCR).
+//
+// GLM-OCR's config requires a very new transformers (model_type "glm_ocr",
+// transformers_version ~5.0.x dev), so we install transformers from git on top
+// of a recent SageMaker PyTorch inference DLC (which ships the
+// sagemaker-inference toolkit that runs model_fn/predict_fn). The 0.9B weights
+// are baked in at build time (GLM_OCR_MODEL_PATH) so the async endpoint doesn't
+// download from Hugging Face on every cold start. They live OUTSIDE /opt/ml/model
+// so the model.tar.gz (inference.py) extraction does not clobber them.
+export const GLM_OCR_DOCKERFILE = `# GLM-OCR Docker Image for AWS SageMaker
+FROM 763104351884.dkr.ecr.ap-northeast-2.amazonaws.com/pytorch-inference:2.5.1-gpu-py311-cu124-ubuntu22.04-sagemaker
+
+WORKDIR /opt/ml/code
+ENV PYTHONUNBUFFERED=1
+ENV GLM_OCR_MODEL_PATH=/opt/program/glm-ocr-weights
+ENV HF_HUB_ENABLE_HF_TRANSFER=1
+
+# System dependencies (image decode + PDF rendering via pymupdf)
+RUN apt-get update && apt-get install -y \\
+    libgl1-mesa-glx \\
+    libglib2.0-0 \\
+    && rm -rf /var/lib/apt/lists/*
+
+# GLM-OCR needs transformers from git (model_type glm_ocr, ~5.0.x dev).
+RUN pip install --upgrade pip && \\
+    pip install \\
+      "git+https://github.com/huggingface/transformers.git" \\
+      "tokenizers>=0.21" \\
+      "pymupdf==1.27.2.2" \\
+      "pillow==12.1.1" \\
+      "accelerate" \\
+      "huggingface_hub[hf_transfer]"
+
+# Bake the model weights into the image (avoids per-cold-start HF download)
+RUN python -c "from huggingface_hub import snapshot_download; \\
+    snapshot_download('zai-org/GLM-OCR', local_dir='/opt/program/glm-ocr-weights')"
+
+EXPOSE 8080`;

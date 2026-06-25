@@ -14,6 +14,7 @@ export interface ApiStackProps extends StackProps {
   bucket: Bucket;
   paddleEndpointName: string;
   unlimitedEndpointName: string;
+  glmEndpointName: string;
 }
 
 export class ApiStack extends Stack {
@@ -27,6 +28,7 @@ export class ApiStack extends Stack {
       bucket: props.bucket,
       paddleEndpointName: props.paddleEndpointName,
       unlimitedEndpointName: props.unlimitedEndpointName,
+      glmEndpointName: props.glmEndpointName,
       lambdaCodePath: path.join(__dirname, '../../lambda'),
     });
 
