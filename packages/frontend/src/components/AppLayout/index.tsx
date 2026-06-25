@@ -2,6 +2,7 @@ import { useAuth } from 'react-oidc-context';
 import * as React from 'react';
 import { createContext, useState, useCallback } from 'react';
 import { OcrDocument, OcrRun, OcrModel, MODEL_INFO } from '../../types/ocr';
+import { EndpointStatusPanel } from '../EndpointStatusPanel';
 
 // Icons
 const DocumentIcon = () => (
@@ -301,6 +302,9 @@ const AppLayout: React.FC<React.PropsWithChildren> = ({ children }) => {
                 New Document
               </button>
             </div>
+
+            {/* Model endpoint power (GPU on/off + status lights) */}
+            <EndpointStatusPanel />
 
             {/* Document History */}
             <div className="sidebar-section">

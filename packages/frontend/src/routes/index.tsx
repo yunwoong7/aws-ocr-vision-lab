@@ -26,6 +26,7 @@ import {
   OcrStructureResultData,
   ResultViewTab,
   ModelOptions,
+  FAMILY_INFO,
   getDefaultOptionsForModel,
   getFamilyForModel,
   isOcrV5Result,
@@ -72,8 +73,14 @@ function OcrPage() {
   const apiUrl = runtimeConfig.apiUrl || runtimeConfig.apis?.ocr;
 
   // API hooks
-  const { fetchDocuments, deleteS3Files, fetchS3ImageUrl, fetchRunResult } =
-    useOcrApi();
+  const {
+    fetchDocuments,
+    deleteS3Files,
+    fetchS3ImageUrl,
+    fetchRunResult,
+    fetchEndpointStatus,
+    setEndpointPower,
+  } = useOcrApi();
 
   // Fetch documents on mount when authenticated
   useEffect(() => {
@@ -721,8 +728,33 @@ function OcrPage() {
     [apiUrl, auth.user?.id_token, selectedModel, modelOptions],
   );
 
+  // Ensure the selected model's GPU endpoint is powered on before submitting.
+  // Endpoints default to off (cost 0); if off, confirm with the user, turn it
+  // on, and let them proceed (the request queues until the instance is ready).
+  // Returns true if OK to proceed, false if the user cancelled.
+  const ensureEndpointOn = useCallback(async (): Promise<boolean> => {
+    const family = getFamilyForModel(selectedModel);
+    const statuses = await fetchEndpointStatus();
+    const status = statuses.find((s) => s.family === family);
+    // If we can't read status, don't block the user.
+    if (!status || status.enabled) return true;
+
+    const familyTitle = FAMILY_INFO[family]?.title ?? family;
+    const proceed = window.confirm(
+      `The "${familyTitle}" model is currently off (to save GPU cost).\n\n` +
+        `Turn it on now and run? It can take a few minutes for the model to ` +
+        `become ready on the first request.`,
+    );
+    if (!proceed) return false;
+    await setEndpointPower(family, true);
+    return true;
+  }, [selectedModel, fetchEndpointStatus, setEndpointPower]);
+
   // Submit: first run (new file → upload) or additional run (reuse document).
   const handleSubmit = useCallback(async () => {
+    // Gate on endpoint power (confirm + turn on if off).
+    if (!(await ensureEndpointOn())) return;
+
     const newRun: OcrRun = {
       model: selectedModel,
       family: getFamilyForModel(selectedModel),
@@ -841,6 +873,7 @@ function OcrPage() {
     setCurrentModel,
     startRun,
     pollRun,
+    ensureEndpointOn,
   ]);
 
   // "Run another model": keep the current document selected (so handleSubmit

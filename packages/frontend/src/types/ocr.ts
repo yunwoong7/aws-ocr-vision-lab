@@ -1,6 +1,19 @@
 // Model family types
 export type OcrFamily = 'paddleocr' | 'unlimited-ocr';
 
+// SageMaker endpoint power status (per family). `light` drives the UI dot:
+//   green = ready, grey = off, yellow = transitioning.
+export interface EndpointStatus {
+  family: OcrFamily;
+  endpointName: string;
+  enabled: boolean; // autoscaling MinCapacity >= 1
+  minCapacity: number;
+  maxCapacity: number;
+  currentInstanceCount: number;
+  endpointStatus: string;
+  light: 'green' | 'grey' | 'yellow';
+}
+
 // Model (variant) types
 export type OcrModel =
   | 'pp-ocrv5'

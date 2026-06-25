@@ -169,9 +169,12 @@ export class OcrEndpoint extends Construct {
 
     // Auto Scaling for the async-inference variant.
     // Async endpoints scale on the per-instance request backlog rather than
-    // CPU/invocations. minCapacity defaults to 1 (keep one instance warm so
-    // the GPU model stays loaded); raise maxCapacity to absorb bursts.
-    const minCapacity = props.minCapacity ?? 1;
+    // CPU/invocations. minCapacity defaults to 0 so endpoints start OFF (no
+    // warm instance = no GPU cost); the UI's power toggle flips MinCapacity to
+    // 1 (on) or 0 (off) at runtime via the endpoint-manager Lambda. Note: a
+    // CDK redeploy resets MinCapacity to this default (OFF), matching the
+    // "default off" policy. maxCapacity absorbs bursts while ON.
+    const minCapacity = props.minCapacity ?? 0;
     const maxCapacity = props.maxCapacity ?? 3;
     const resourceId = `endpoint/${this.endpointName}/variant/AllTraffic`;
 
