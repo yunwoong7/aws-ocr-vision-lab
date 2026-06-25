@@ -28,33 +28,23 @@ export interface OcrImageBuilderProps {
    * Path to the build-trigger Lambda code (required)
    */
   buildTriggerLambdaPath: string;
+  /**
+   * Dockerfile contents written verbatim and built by CodeBuild.
+   * Its MD5 hash drives rebuild-on-change. Required — pass one of the
+   * exported Dockerfile constants (e.g. PADDLEOCR_DOCKERFILE).
+   */
+  dockerfileContent: string;
+  /**
+   * CodeBuild project name. Must be unique within the account/region, so each
+   * builder instance needs a distinct value.
+   * @default `${repositoryName}-docker-builder`
+   */
+  buildProjectName?: string;
+  /**
+   * CodeBuild project description.
+   */
+  description?: string;
 }
-
-// Dockerfile content - change this to trigger rebuild
-const DOCKERFILE_CONTENT = `# PaddleOCR-VL Docker Image for AWS SageMaker
-FROM 763104351884.dkr.ecr.ap-northeast-2.amazonaws.com/pytorch-inference:2.2.0-gpu-py310-cu118-ubuntu20.04-sagemaker
-
-WORKDIR /opt/ml/code
-ENV PADDLEOCR_HOME=/opt/ml/code/.paddleocr
-ENV PYTHONUNBUFFERED=1
-
-# Install system dependencies
-RUN apt-get update && apt-get install -y \\
-    libgl1-mesa-glx \\
-    libglib2.0-0 \\
-    libsm6 \\
-    libxext6 \\
-    libxrender-dev \\
-    && rm -rf /var/lib/apt/lists/*
-
-# Install PaddlePaddle GPU
-RUN pip install --upgrade pip && \\
-    pip install paddlepaddle-gpu==3.2.2 -i https://www.paddlepaddle.org.cn/packages/stable/cu118/
-
-# Install PaddleOCR
-RUN pip install "paddleocr[all]"
-
-EXPOSE 8080`;
 
 export class OcrImageBuilder extends Construct {
   public readonly repository: Repository;
@@ -66,13 +56,16 @@ export class OcrImageBuilder extends Construct {
     super(scope, id);
 
     const repositoryName = props.repositoryName || 'paddleocr-vl';
+    const dockerfileContent = props.dockerfileContent;
+    const buildProjectName =
+      props.buildProjectName || `${repositoryName}-docker-builder`;
     const region = Stack.of(this).region;
     const account = Stack.of(this).account;
 
     // Calculate hash of Dockerfile for change detection
     const dockerfileHash = crypto
       .createHash('md5')
-      .update(DOCKERFILE_CONTENT)
+      .update(dockerfileContent)
       .digest('hex')
       .substring(0, 8);
 
@@ -88,8 +81,10 @@ export class OcrImageBuilder extends Construct {
 
     // CodeBuild Project for building Docker image only
     this.buildProject = new Project(this, 'BuildProject', {
-      projectName: 'paddleocr-docker-builder',
-      description: 'Builds PaddleOCR Docker image for SageMaker',
+      projectName: buildProjectName,
+      description:
+        props.description ||
+        `Builds ${repositoryName} Docker image for SageMaker`,
       environment: {
         buildImage: LinuxBuildImage.STANDARD_7_0,
         computeType: ComputeType.LARGE,
@@ -110,7 +105,7 @@ export class OcrImageBuilder extends Construct {
             commands: [
               'echo Building Docker image...',
               `cat > Dockerfile << 'DOCKERFILE_EOF'
-${DOCKERFILE_CONTENT}
+${dockerfileContent}
 DOCKERFILE_EOF`,
               'cat Dockerfile',
               `docker build -t ${repositoryName}:latest .`,

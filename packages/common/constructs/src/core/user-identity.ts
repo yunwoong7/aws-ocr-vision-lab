@@ -16,9 +16,19 @@ import {
 import { Construct } from 'constructs';
 import { RuntimeConfig } from './runtime-config.js';
 import { Distribution } from 'aws-cdk-lib/aws-cloudfront';
-import { suppressRules } from './checkov.js';
+import { cognitoManagedLoginSettings } from './cognito-managed-login-style.js';
+import * as fs from 'fs';
+import * as path from 'path';
+import { fileURLToPath } from 'url';
+
+const __dirname = path.dirname(fileURLToPath(import.meta.url));
 
 const WEB_CLIENT_ID = 'WebClient';
+
+// AWS OCR Lab logo, base64-encoded for the Cognito hosted login form.
+const LOGO_BYTES = fs
+  .readFileSync(path.join(__dirname, 'assets/logo.png'))
+  .toString('base64');
 
 export interface UserIdentityProps {
   /**
@@ -119,9 +129,10 @@ export class UserIdentity extends Construct {
     const lazilyComputedCallbackUrls = Lazy.list({
       produce: () =>
         [
+          // Local Vite dev servers only. The deployed app uses the CloudFront
+          // domain (added below) or any explicit additionalCallbackUrls.
           'http://localhost:4200',
           'http://localhost:4300',
-          `https://${Stack.of(this).region}.console.aws.amazon.com`,
         ]
           .concat(
             this.findCloudFrontDistributions().map(
@@ -173,7 +184,23 @@ export class UserIdentity extends Construct {
     new CfnManagedLoginBranding(this, 'ManagedLoginBranding', {
       userPoolId: userPool.userPoolId,
       clientId: userPoolClient.userPoolClientId,
-      useCognitoProvidedValues: true,
+      // Custom branding: AWS OCR Lab logo + dark/orange theme to match the app.
+      useCognitoProvidedValues: false,
+      assets: [
+        {
+          category: 'FORM_LOGO',
+          colorMode: 'LIGHT',
+          extension: 'PNG',
+          bytes: LOGO_BYTES,
+        },
+        {
+          category: 'FORM_LOGO',
+          colorMode: 'DARK',
+          extension: 'PNG',
+          bytes: LOGO_BYTES,
+        },
+      ],
+      settings: cognitoManagedLoginSettings,
     }).node.addDependency(userPoolClient, userPool, userPoolDomain);
   };
 

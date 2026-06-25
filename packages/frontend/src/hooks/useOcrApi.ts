@@ -1,13 +1,26 @@
 import { useCallback } from 'react';
 import { useAuth } from 'react-oidc-context';
 import { useRuntimeConfig } from './useRuntimeConfig';
-import { OcrJob, OcrModel, ModelOptions } from '../types/ocr';
+import {
+  OcrDocument,
+  OcrRun,
+  OcrModel,
+  OcrFamily,
+  ModelOptions,
+} from '../types/ocr';
 
 export interface UseOcrApiReturn {
-  fetchJobs: () => Promise<OcrJob[]>;
-  deleteS3Files: (s3Key: string, jobId: string) => Promise<void>;
+  fetchDocuments: () => Promise<OcrDocument[]>;
+  deleteS3Files: (
+    s3Key: string,
+    documentId: string,
+    model?: OcrModel,
+  ) => Promise<void>;
   fetchS3ImageUrl: (s3Key: string) => Promise<string | null>;
-  fetchJobResult: (jobId: string) => Promise<OcrJob['result'] | null>;
+  fetchRunResult: (
+    documentId: string,
+    model: OcrModel,
+  ) => Promise<OcrRun['result'] | null>;
 }
 
 export function useOcrApi(): UseOcrApiReturn {
@@ -15,48 +28,62 @@ export function useOcrApi(): UseOcrApiReturn {
   const runtimeConfig = useRuntimeConfig();
   const apiUrl = runtimeConfig.apiUrl || runtimeConfig.apis?.ocr;
 
-  const fetchJobs = useCallback(async (): Promise<OcrJob[]> => {
+  const fetchDocuments = useCallback(async (): Promise<OcrDocument[]> => {
     if (!apiUrl || !auth.user?.id_token) return [];
     try {
-      const response = await fetch(`${apiUrl}/jobs`, {
+      const response = await fetch(`${apiUrl}/documents`, {
         method: 'GET',
         headers: {
           Authorization: auth.user.id_token,
         },
       });
       if (!response.ok) {
-        console.error('Failed to fetch jobs:', response.statusText);
+        console.error('Failed to fetch documents:', response.statusText);
         return [];
       }
       const data = await response.json();
-      // Convert API response to OcrJob format
-      const fetchedJobs: OcrJob[] = data.jobs.map((job: {
-        id: string;
-        filename: string;
-        s3Key: string;
-        createdAt: string;
-        model: string;
-        modelOptions: ModelOptions;
-        status: string;
-      }) => ({
-        id: job.id,
-        filename: job.filename,
-        s3Key: job.s3Key,
-        createdAt: new Date(job.createdAt),
-        model: job.model as OcrModel,
-        modelOptions: job.modelOptions,
-        status: job.status as OcrJob['status'],
-        imageAvailable: true, // Assume available, will be checked when loading
-      }));
-      return fetchedJobs;
+      const fetchedDocs: OcrDocument[] = (data.documents ?? []).map(
+        (doc: {
+          id: string;
+          filename: string;
+          s3Key: string;
+          createdAt: string;
+          runs?: Array<{
+            model: string;
+            family: string;
+            modelOptions?: ModelOptions;
+            model_options?: ModelOptions;
+            status: string;
+            createdAt?: string;
+            created_at?: string;
+            processingTimeMs?: number;
+            processing_time_ms?: number;
+          }>;
+        }) => ({
+          id: doc.id,
+          filename: doc.filename,
+          s3Key: doc.s3Key,
+          createdAt: new Date(doc.createdAt),
+          imageAvailable: true,
+          runs: (doc.runs ?? []).map((r) => ({
+            model: r.model as OcrModel,
+            family: r.family as OcrFamily,
+            modelOptions: r.modelOptions ?? r.model_options,
+            status: r.status as OcrRun['status'],
+            createdAt: new Date(r.createdAt ?? r.created_at ?? doc.createdAt),
+            processingTimeMs: r.processingTimeMs ?? r.processing_time_ms,
+          })),
+        }),
+      );
+      return fetchedDocs;
     } catch (error) {
-      console.error('Failed to fetch jobs:', error);
+      console.error('Failed to fetch documents:', error);
       return [];
     }
   }, [apiUrl, auth.user?.id_token]);
 
   const deleteS3Files = useCallback(
-    async (s3Key: string, jobId: string) => {
+    async (s3Key: string, documentId: string, model?: OcrModel) => {
       if (!apiUrl || !auth.user?.id_token) return;
       try {
         // Encode each path segment to handle Korean filenames and special characters
@@ -64,13 +91,19 @@ export function useOcrApi(): UseOcrApiReturn {
           .split('/')
           .map((segment) => encodeURIComponent(segment))
           .join('/');
-        // Pass jobId as query parameter for output deletion
-        const response = await fetch(`${apiUrl}/image/${encodedS3Key}?job_id=${jobId}`, {
-          method: 'DELETE',
-          headers: {
-            Authorization: auth.user.id_token,
+        // document_id deletes the whole document; adding model deletes one run.
+        const query = model
+          ? `?document_id=${documentId}&model=${model}`
+          : `?document_id=${documentId}`;
+        const response = await fetch(
+          `${apiUrl}/image/${encodedS3Key}${query}`,
+          {
+            method: 'DELETE',
+            headers: {
+              Authorization: auth.user.id_token,
+            },
           },
-        });
+        );
         if (!response.ok) {
           console.error('Failed to delete S3 files:', response.statusText);
         }
@@ -112,11 +145,14 @@ export function useOcrApi(): UseOcrApiReturn {
     [apiUrl, auth.user?.id_token],
   );
 
-  const fetchJobResult = useCallback(
-    async (jobId: string): Promise<OcrJob['result'] | null> => {
+  const fetchRunResult = useCallback(
+    async (
+      documentId: string,
+      model: OcrModel,
+    ): Promise<OcrRun['result'] | null> => {
       if (!apiUrl || !auth.user?.id_token) return null;
       try {
-        const response = await fetch(`${apiUrl}/ocr/${jobId}`, {
+        const response = await fetch(`${apiUrl}/ocr/${documentId}/${model}`, {
           method: 'GET',
           headers: {
             Authorization: auth.user.id_token,
@@ -131,12 +167,12 @@ export function useOcrApi(): UseOcrApiReturn {
         }
         return null;
       } catch (error) {
-        console.error('Failed to fetch job result:', error);
+        console.error('Failed to fetch run result:', error);
         return null;
       }
     },
     [apiUrl, auth.user?.id_token],
   );
 
-  return { fetchJobs, deleteS3Files, fetchS3ImageUrl, fetchJobResult };
+  return { fetchDocuments, deleteS3Files, fetchS3ImageUrl, fetchRunResult };
 }

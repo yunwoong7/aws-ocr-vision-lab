@@ -53,10 +53,27 @@ cat .env.local
 [tasks.deploy]
 description = "Deploy all CDK stacks"
 run = """
+set -e
 pnpm install
 pnpm nx run @aws-ocr-vision-lab/common-constructs:compile
 pnpm nx run @aws-ocr-vision-lab/frontend:bundle:production
 pnpm nx run @aws-ocr-vision-lab/infra:deploy --output-style=stream -- --all
+
+# 2-pass: the Identity stack is created before the Frontend stack, so it can't
+# know the CloudFront domain on the first pass. Read the deployed domain and
+# re-deploy Identity so Cognito accepts it as a callback/logout URL (otherwise
+# login fails with redirect_mismatch). Idempotent — a no-op once wired.
+REGION="${AWS_REGION:-${CDK_DEFAULT_REGION:-ap-northeast-2}}"
+FRONTEND_DOMAIN=$(aws cloudformation describe-stacks \
+  --stack-name AwsOcrLab-Frontend --region "$REGION" \
+  --query "Stacks[0].Outputs[?contains(OutputKey,'DistributionDomainName')].OutputValue | [0]" \
+  --output text 2>/dev/null || echo "")
+if [ -n "$FRONTEND_DOMAIN" ] && [ "$FRONTEND_DOMAIN" != "None" ]; then
+  echo "Wiring CloudFront domain into Cognito callbacks: $FRONTEND_DOMAIN"
+  pnpm nx run @aws-ocr-vision-lab/infra:deploy --output-style=stream -- \
+    AwsOcrLab-Identity --require-approval never \
+    --context frontendDomain="$FRONTEND_DOMAIN"
+fi
 """
 
 [tasks."deploy:stack"]
@@ -65,7 +82,7 @@ run = """
 pnpm install
 pnpm nx run @aws-ocr-vision-lab/common-constructs:compile
 pnpm nx run @aws-ocr-vision-lab/frontend:bundle:production
-stack=$(echo "PaddleOCR-Infra\nPaddleOCR-Model\nPaddleOCR-Identity\nPaddleOCR-Endpoint\nPaddleOCR-Api\nPaddleOCR-Frontend" | fzf --prompt="Select stack: ")
+stack=$(echo "AwsOcrLab-Infra\nAwsOcrLab-Model\nAwsOcrLab-Identity\nAwsOcrLab-Endpoint\nAwsOcrLab-UnlimitedEndpoint\nAwsOcrLab-Api\nAwsOcrLab-Frontend" | fzf --prompt="Select stack: ")
 pnpm nx run @aws-ocr-vision-lab/infra:deploy $stack --output-style=stream
 """
 

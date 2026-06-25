@@ -166,13 +166,13 @@ Resources:
                 # Deploy InfraStack (S3, ECR, CodeBuild for Docker)
                 - echo "Deploying InfraStack..."
                 - cd packages/infra
-                - npx cdk deploy PaddleOCR-Infra --require-approval never
+                - npx cdk deploy AwsOcrLab-Infra --require-approval never
 
                 # Build Docker image using CodeBuild
                 - |
                   echo "Building Docker image..."
                   BUILD_PROJECT=$(aws cloudformation describe-stacks \
-                    --stack-name PaddleOCR-Infra \
+                    --stack-name AwsOcrLab-Infra \
                     --query 'Stacks[0].Outputs[?OutputKey==`CodeBuildProjectName`].OutputValue' \
                     --output text 2>/dev/null || echo "")
 
@@ -197,26 +197,54 @@ Resources:
 
                 # Deploy ModelStack (upload inference.py as model.tar.gz)
                 - echo "Deploying ModelStack..."
-                - npx cdk deploy PaddleOCR-Model --require-approval never
+                - npx cdk deploy AwsOcrLab-Model --require-approval never
 
-                # Deploy ApplicationStack (Cognito, SageMaker, API, Frontend)
+                # Deploy IdentityStack (Cognito User Pool + Identity Pool)
+                - echo "Deploying IdentityStack..."
+                - npx cdk deploy AwsOcrLab-Identity --require-approval never
+
+                # Deploy EndpointStack (SageMaker async endpoint + autoscaling)
                 - |
-                  echo "Deploying ApplicationStack..."
-                  npx cdk deploy PaddleOCR-Application \
+                  echo "Deploying EndpointStack..."
+                  npx cdk deploy AwsOcrLab-Endpoint \
                     --require-approval never \
-                    --context adminUserEmail="$ADMIN_USER_EMAIL" \
                     --context instanceType="$INSTANCE_TYPE"
+
+                # Deploy ApiStack (API Gateway + Lambda)
+                - echo "Deploying ApiStack..."
+                - npx cdk deploy AwsOcrLab-Api --require-approval never
+
+                # Deploy FrontendStack (CloudFront + S3)
+                - echo "Deploying FrontendStack..."
+                - npx cdk deploy AwsOcrLab-Frontend --require-approval never
+
+                # Re-deploy IdentityStack with the CloudFront domain so the
+                # Cognito app client accepts it as a callback/logout URL.
+                # (Identity is created before Frontend, so it can't know the
+                # domain on the first pass — this second pass wires it in.)
+                - |
+                  FRONTEND_DOMAIN=$(aws cloudformation describe-stacks \
+                    --stack-name AwsOcrLab-Frontend \
+                    --query 'Stacks[0].Outputs[?contains(OutputKey,`DistributionDomainName`)].OutputValue' \
+                    --output text 2>/dev/null || echo "")
+
+                  if [ -n "$FRONTEND_DOMAIN" ] && [ "$FRONTEND_DOMAIN" != "None" ]; then
+                    echo "Wiring CloudFront domain into Cognito callbacks: $FRONTEND_DOMAIN"
+                    npx cdk deploy AwsOcrLab-Identity \
+                      --require-approval never \
+                      --context frontendDomain="$FRONTEND_DOMAIN"
+                  fi
 
                 # Get outputs
                 - |
                   FRONTEND_DOMAIN=$(aws cloudformation describe-stacks \
-                    --stack-name PaddleOCR-Application \
+                    --stack-name AwsOcrLab-Frontend \
                     --query 'Stacks[0].Outputs[?contains(OutputKey,`DistributionDomainName`)].OutputValue' \
                     --output text 2>/dev/null || echo "")
                   FRONTEND_URL="https://${FRONTEND_DOMAIN}"
 
                   USER_POOL_ID=$(aws cloudformation describe-stacks \
-                    --stack-name PaddleOCR-Application \
+                    --stack-name AwsOcrLab-Identity \
                     --query "Stacks[0].Outputs[?contains(OutputKey,'UserPoolId') && !contains(OutputKey,'Client')].OutputValue" \
                     --output text 2>/dev/null | awk '{print $1}')
 

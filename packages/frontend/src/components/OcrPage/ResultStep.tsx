@@ -8,12 +8,13 @@ import { DocumentView } from './DocumentView';
 import {
   OcrBlock,
   OcrJob,
+  OcrDocument,
+  OcrRun,
+  OcrModel,
   OcrResultData,
   OcrV5ResultData,
-  OcrStructureResultData,
   ResultViewTab,
   MODEL_INFO,
-  SUPPORTED_LANGUAGES,
   isOcrV5Result,
   isStructureResult,
 } from '../../types/ocr';
@@ -40,26 +41,32 @@ export interface ResultStepProps {
   handleZoomFit: () => void;
   handleWheel: (e: React.WheelEvent) => void;
   handleMouseDown: (e: React.MouseEvent) => void;
-  handleRetry: () => void;
+  handleRunAnotherModel: () => void;
   handleNewDocument: () => void;
   currentPdfPage: number;
   totalPdfPages: number;
   handlePdfPageChange: (page: number) => void;
-  canRetry: boolean;
   setLoadedImageUrl: (url: string | null) => void;
-  // Current job info
-  currentJob: OcrJob | undefined;
-  jobs: OcrJob[];
-  processingJobId: string | null;
+  // Document + selected run (model tab)
+  currentDocument: OcrDocument | undefined;
+  selectedRun: OcrRun | undefined;
+  currentModel: OcrModel | null;
+  setCurrentModel: (model: OcrModel | null) => void;
   // Markdown
   isMarkdownEditMode: boolean;
   setIsMarkdownEditMode: (mode: boolean) => void;
-  updateJob: (id: string, updates: Partial<OcrJob>) => void;
+  updateRun: (
+    documentId: string,
+    model: OcrModel,
+    updates: Partial<OcrRun>,
+  ) => void;
   copyToClipboard: (text: string) => void;
   // Document view
   croppedImagesMap: Map<number, string>;
   croppedImagesReady: boolean;
-  setCroppedImagesMap: React.Dispatch<React.SetStateAction<Map<number, string>>>;
+  setCroppedImagesMap: React.Dispatch<
+    React.SetStateAction<Map<number, string>>
+  >;
   setCroppedImagesReady: React.Dispatch<React.SetStateAction<boolean>>;
   lastProcessedBlocksRef: React.MutableRefObject<string>;
 }
@@ -85,19 +92,19 @@ export const ResultStep: React.FC<ResultStepProps> = ({
   handleZoomFit,
   handleWheel,
   handleMouseDown,
-  handleRetry,
+  handleRunAnotherModel,
   handleNewDocument,
   currentPdfPage,
   totalPdfPages,
   handlePdfPageChange,
-  canRetry,
   setLoadedImageUrl,
-  currentJob,
-  jobs,
-  processingJobId,
+  currentDocument,
+  selectedRun,
+  currentModel,
+  setCurrentModel,
   isMarkdownEditMode,
   setIsMarkdownEditMode,
-  updateJob,
+  updateRun,
   copyToClipboard,
   croppedImagesMap,
   croppedImagesReady,
@@ -112,37 +119,82 @@ export const ResultStep: React.FC<ResultStepProps> = ({
   const v5Data = isV5Format ? (resultData as OcrV5ResultData) : null;
   const structData = isStructureResult(resultData) ? resultData : null;
 
-  const job = currentJob || jobs.find((j) => j.id === processingJobId);
-  const filename = job?.filename || 'document';
+  const filename = currentDocument?.filename || 'document';
+  const runs = currentDocument?.runs ?? [];
+
+  // Adapter: MarkdownView/DocumentView still take a `job` + `updateJob`. We
+  // expose the selected run as a job-like object (id = document id) and route
+  // edits back to the run via updateRun, so those views need no changes.
+  const runAsJob: OcrJob | undefined =
+    currentDocument && selectedRun
+      ? {
+          id: currentDocument.id,
+          filename: currentDocument.filename,
+          model: selectedRun.model,
+          modelOptions: selectedRun.modelOptions,
+          status: selectedRun.status,
+          createdAt: selectedRun.createdAt,
+          result: selectedRun.result,
+          s3Key: currentDocument.s3Key,
+          processingTimeMs: selectedRun.processingTimeMs,
+          editedDocumentHtml: selectedRun.editedDocumentHtml,
+          editedMarkdown: selectedRun.editedMarkdown,
+        }
+      : undefined;
+
+  const updateJobAdapter = (_id: string, updates: Partial<OcrJob>) => {
+    if (!currentDocument || !selectedRun) return;
+    updateRun(
+      currentDocument.id,
+      selectedRun.model,
+      updates as Partial<OcrRun>,
+    );
+  };
 
   return (
     <div className="page-container">
       <div className="result-top-bar">
         <div className="result-top-bar-left">
-          {job && (() => {
-            const modelInfo = MODEL_INFO[job.model];
-            return (
-              <span className="result-top-bar-model">
-                {modelInfo?.title || job.model}
-                {job.processingTimeMs && (
-                  <span className="result-top-bar-time">
-                    {job.processingTimeMs >= 1000
-                      ? `${(job.processingTimeMs / 1000).toFixed(1)}s`
-                      : `${job.processingTimeMs}ms`}
-                  </span>
-                )}
-              </span>
-            );
-          })()}
+          {/* Model run tabs — switch which model's result is shown */}
+          <div className="result-run-tabs">
+            {runs.map((run) => {
+              const info = MODEL_INFO[run.model];
+              const isActive =
+                (currentModel ?? selectedRun?.model) === run.model;
+              return (
+                <button
+                  key={run.model}
+                  className={`result-run-tab ${isActive ? 'active' : ''}`}
+                  onClick={() => setCurrentModel(run.model)}
+                  title={info?.title || run.model}
+                >
+                  {info?.title || run.model}
+                  {run.status === 'processing' && (
+                    <span className="result-run-tab-spinner" />
+                  )}
+                  {run.status === 'failed' && (
+                    <span className="result-run-tab-error">!</span>
+                  )}
+                  {run.status === 'completed' && run.processingTimeMs && (
+                    <span className="result-top-bar-time">
+                      {run.processingTimeMs >= 1000
+                        ? `${(run.processingTimeMs / 1000).toFixed(1)}s`
+                        : `${run.processingTimeMs}ms`}
+                    </span>
+                  )}
+                </button>
+              );
+            })}
+          </div>
         </div>
         <div className="result-top-bar-right">
           <button
             className="btn btn-sm btn-outline"
-            onClick={handleRetry}
-            disabled={!canRetry}
-            title="Retry with different options"
+            onClick={handleRunAnotherModel}
+            disabled={!currentDocument?.s3Key}
+            title="Run another OCR model on this file"
           >
-            Retry
+            + Run another model
           </button>
           <button
             className="btn btn-sm btn-outline"
@@ -225,11 +277,12 @@ export const ResultStep: React.FC<ResultStepProps> = ({
               <MarkdownView
                 blocks={isV5Format ? null : blocks}
                 v5Data={v5Data}
-                job={job}
+                content={selectedRun?.result?.content}
+                job={runAsJob}
                 currentPdfPage={currentPdfPage}
                 isMarkdownEditMode={isMarkdownEditMode}
                 setIsMarkdownEditMode={setIsMarkdownEditMode}
-                updateJob={updateJob}
+                updateJob={updateJobAdapter}
                 copyToClipboard={copyToClipboard}
               />
             )}
@@ -238,9 +291,9 @@ export const ResultStep: React.FC<ResultStepProps> = ({
                 blocks={isV5Format ? null : blocks}
                 structData={structData}
                 v5Data={v5Data}
-                job={job}
+                job={runAsJob}
                 currentPdfPage={currentPdfPage}
-                updateJob={updateJob}
+                updateJob={updateJobAdapter}
                 croppedImagesMap={croppedImagesMap}
                 croppedImagesReady={croppedImagesReady}
                 setCroppedImagesMap={setCroppedImagesMap}

@@ -44,12 +44,12 @@ mise run deploy:stack
 
 | Stack | Description |
 |-------|-------------|
-| PaddleOCR-Infra | S3, ECR, CodeBuild |
-| PaddleOCR-Model | Model artifacts |
-| PaddleOCR-Identity | Cognito |
-| PaddleOCR-Endpoint | SageMaker |
-| PaddleOCR-Api | API Gateway + Lambda |
-| PaddleOCR-Frontend | CloudFront + S3 |
+| AwsOcrLab-Infra | S3, ECR, CodeBuild |
+| AwsOcrLab-Model | Model artifacts |
+| AwsOcrLab-Identity | Cognito |
+| AwsOcrLab-Endpoint | SageMaker |
+| AwsOcrLab-Api | API Gateway + Lambda |
+| AwsOcrLab-Frontend | CloudFront + S3 |
 
 ### Hotswap deployment
 

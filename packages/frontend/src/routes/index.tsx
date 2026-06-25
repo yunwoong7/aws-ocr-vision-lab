@@ -20,13 +20,14 @@ import { BlockPreviewModal } from '../components/OcrPage/BlockPreviewModal';
 
 import {
   OcrModel,
-  OcrJob,
+  OcrRun,
   OcrBlock,
   OcrResultData,
   OcrStructureResultData,
   ResultViewTab,
   ModelOptions,
   getDefaultOptionsForModel,
+  getFamilyForModel,
   isOcrV5Result,
   isStructureResult,
 } from '../types/ocr';
@@ -37,17 +38,32 @@ export const Route = createFileRoute('/')({
 
 type Step = 'upload' | 'options' | 'result';
 
+// Max upload size: 100MB (files > 5MB go through a presigned URL). Module-level
+// so it's referentially stable and doesn't need to be a hook dependency.
+const MAX_FILE_SIZE = 100 * 1024 * 1024;
+
+// MIME types accepted by the uploader / drag-and-drop handler.
+const SUPPORTED_FILE_TYPES = [
+  'image/png',
+  'image/jpeg',
+  'image/tiff',
+  'application/pdf',
+];
+
 function OcrPage() {
   const auth = useAuth();
   const runtimeConfig = useRuntimeConfig();
   const {
-    jobs,
-    setJobs,
-    addJob,
-    updateJob,
-    replaceJobId,
-    currentJobId,
-    setCurrentJobId,
+    documents,
+    setDocuments,
+    addDocument,
+    updateDocument,
+    upsertRun,
+    updateRun,
+    currentDocumentId,
+    setCurrentDocumentId,
+    currentModel,
+    setCurrentModel,
     setOnNewJob,
     setOnDeleteS3Files,
   } = useContext(AppLayoutContext);
@@ -56,16 +72,17 @@ function OcrPage() {
   const apiUrl = runtimeConfig.apiUrl || runtimeConfig.apis?.ocr;
 
   // API hooks
-  const { fetchJobs, deleteS3Files, fetchS3ImageUrl, fetchJobResult } = useOcrApi();
+  const { fetchDocuments, deleteS3Files, fetchS3ImageUrl, fetchRunResult } =
+    useOcrApi();
 
-  // Fetch jobs on mount when authenticated
+  // Fetch documents on mount when authenticated
   useEffect(() => {
     if (auth.isAuthenticated && apiUrl) {
-      fetchJobs().then((fetchedJobs) => {
-        setJobs(fetchedJobs);
+      fetchDocuments().then((fetchedDocs) => {
+        setDocuments(fetchedDocs);
       });
     }
-  }, [auth.isAuthenticated, apiUrl, fetchJobs, setJobs]);
+  }, [auth.isAuthenticated, apiUrl, fetchDocuments, setDocuments]);
 
   // Set delete S3 files handler for AppLayout
   useEffect(() => {
@@ -96,9 +113,12 @@ function OcrPage() {
     getDefaultOptionsForModel('paddleocr-vl'),
   );
 
-  // Processing State
+  // Processing State (true while submitting the very first run of a new file)
   const [isProcessing, setIsProcessing] = useState(false);
-  const [processingJobId, setProcessingJobId] = useState<string | null>(null);
+
+  // Seconds elapsed while waiting for the selected run's result (drives the
+  // progress indicator on the result screen).
+  const [waitElapsedSec, setWaitElapsedSec] = useState(0);
 
   // Result State
   const [resultTab, setResultTab] = useState<ResultViewTab>('blocks');
@@ -126,8 +146,43 @@ function OcrPage() {
   const [croppedImagesReady, setCroppedImagesReady] = useState(false);
   const lastProcessedBlocksRef = useRef<string>('');
 
-  // Current job (from history)
-  const currentJob = jobs.find((j) => j.id === currentJobId);
+  // Current document + selected run (the model tab being viewed)
+  const currentDocument = documents.find((d) => d.id === currentDocumentId);
+  const selectedRun =
+    currentDocument?.runs.find((r) => r.model === currentModel) ??
+    currentDocument?.runs[0];
+
+  // Content-only results (Unlimited-OCR) have no per-block structure, so the
+  // blocks/document tabs are empty — default such runs to the markdown tab.
+  const isContentOnlyResult =
+    !!selectedRun?.result &&
+    !(selectedRun.result.results && selectedRun.result.results.length > 0) &&
+    !!selectedRun.result.content;
+  useEffect(() => {
+    if (
+      isContentOnlyResult &&
+      (resultTab === 'blocks' || resultTab === 'document')
+    ) {
+      setResultTab('markdown');
+    }
+    // eslint-disable-next-line react-hooks/exhaustive-deps
+  }, [isContentOnlyResult, selectedRun?.model, currentDocumentId]);
+
+  // Tick a 1s timer while the selected run is still processing (no result yet),
+  // so the result screen can show elapsed time instead of a static "Loading...".
+  const selectedRunWaiting =
+    !!selectedRun && selectedRun.status === 'processing' && !selectedRun.result;
+  useEffect(() => {
+    if (!selectedRunWaiting) {
+      setWaitElapsedSec(0);
+      return;
+    }
+    setWaitElapsedSec(0);
+    const id = setInterval(() => {
+      setWaitElapsedSec((s) => s + 1);
+    }, 1000);
+    return () => clearInterval(id);
+  }, [selectedRunWaiting, selectedRun?.model, currentDocumentId]);
 
   // Reset loadedImageUrl and cropped images when previewUrl changes
   useEffect(() => {
@@ -138,7 +193,10 @@ function OcrPage() {
     // For data URLs, the image might already be complete, so check after a tick
     if (previewUrl?.startsWith('data:')) {
       const checkComplete = () => {
-        if (resultImageRef.current?.complete && resultImageRef.current.naturalWidth > 0) {
+        if (
+          resultImageRef.current?.complete &&
+          resultImageRef.current.naturalWidth > 0
+        ) {
           setLoadedImageUrl(previewUrl);
         }
       };
@@ -159,98 +217,121 @@ function OcrPage() {
     // eslint-disable-next-line react-hooks/exhaustive-deps
   }, []);
 
-  // Switch to result view when viewing a job from history
+  // When a document is selected from the sidebar, default the model tab to its
+  // first run (so selectedRun resolves) and load the shared input image.
   useEffect(() => {
-    if (currentJob) {
-      // Immediately clear previous state so nothing stale is shown
-      setPreviewUrl(null);
-      setLoadedImageUrl(null);
-
-      // Load image from S3
-      if (currentJob.s3Key) {
-        (async () => {
-          const imageUrl = await fetchS3ImageUrl(currentJob.s3Key!);
-          if (!imageUrl) {
-            // Image not found in S3, mark as unavailable
-            updateJob(currentJob.id, { imageAvailable: false });
-            setPreviewUrl(null);
-            return;
-          }
-          // Mark as available
-          if (currentJob.imageAvailable !== true) {
-            updateJob(currentJob.id, { imageAvailable: true });
-          }
-
-          // Check if it's a PDF - render first page to image
-          if (currentJob.filename.toLowerCase().endsWith('.pdf')) {
-            try {
-              const response = await fetch(imageUrl);
-              const arrayBuffer = await response.arrayBuffer();
-              pdfArrayBufferRef.current = arrayBuffer;
-              const { dataUrl, totalPages } = await renderPdfToImage(arrayBuffer, 1);
-              setTotalPdfPages(totalPages);
-              setCurrentPdfPage(1);
-              if (dataUrl) {
-                setPreviewUrl(dataUrl);
-              } else {
-                setPreviewUrl(null);
-              }
-            } catch (error) {
-              console.error('Failed to render PDF:', error);
-              setPreviewUrl(null);
-            }
-          } else {
-            pdfArrayBufferRef.current = null;
-            setTotalPdfPages(1);
-            setCurrentPdfPage(1);
-            setPreviewUrl(imageUrl);
-          }
-        })();
-      }
-
-      // Fetch result from S3 if not already loaded
-      if (!currentJob.result && currentJob.status === 'completed') {
-        (async () => {
-          const result = await fetchJobResult(currentJob.id);
-          if (result) {
-            updateJob(currentJob.id, { result });
-            setStep('result');
-          }
-        })();
-      } else if (currentJob.result) {
-        // Switch to result view if job has result
-        setStep('result');
-      }
-
-      // Reset zoom and pan when switching jobs
-      setZoomLevel(1);
-      setPanPosition({ x: 0, y: 0 });
-      // Reset edit mode when switching jobs
-      setIsMarkdownEditMode(false);
-      // Reset cropped images when switching jobs
-      setCroppedImagesMap(new Map());
-      setCroppedImagesReady(false);
-      lastProcessedBlocksRef.current = '';
+    if (!currentDocument) return;
+    // Default the selected model tab to the document's first run.
+    if (
+      currentDocument.runs.length > 0 &&
+      !currentDocument.runs.some((r) => r.model === currentModel)
+    ) {
+      setCurrentModel(currentDocument.runs[0].model);
     }
-  }, [currentJobId, currentJob?.s3Key, currentJob?.status, currentJob?.result, fetchS3ImageUrl, fetchJobResult, updateJob]);
 
-  // Ensure previewUrl is set when step changes to result
-  useEffect(() => {
-    if (step === 'result' && !previewUrl) {
-      const job = currentJob || jobs.find((j) => j.id === processingJobId);
-      if (!job?.s3Key) return;
+    // Immediately clear previous state so nothing stale is shown
+    setPreviewUrl(null);
+    setLoadedImageUrl(null);
 
+    const s3Key = currentDocument.s3Key;
+    if (s3Key) {
       (async () => {
-        const imageUrl = await fetchS3ImageUrl(job.s3Key!);
-        if (!imageUrl) return;
+        const imageUrl = await fetchS3ImageUrl(s3Key);
+        if (!imageUrl) {
+          updateDocument(currentDocument.id, { imageAvailable: false });
+          setPreviewUrl(null);
+          return;
+        }
+        if (currentDocument.imageAvailable !== true) {
+          updateDocument(currentDocument.id, { imageAvailable: true });
+        }
 
-        // Check if it's a PDF - render first page to image
-        if (job.filename.toLowerCase().endsWith('.pdf')) {
+        if (currentDocument.filename.toLowerCase().endsWith('.pdf')) {
           try {
             const response = await fetch(imageUrl);
             const arrayBuffer = await response.arrayBuffer();
             pdfArrayBufferRef.current = arrayBuffer;
-            const { dataUrl, totalPages } = await renderPdfToImage(arrayBuffer, 1);
+            const { dataUrl, totalPages } = await renderPdfToImage(
+              arrayBuffer,
+              1,
+            );
+            setTotalPdfPages(totalPages);
+            setCurrentPdfPage(1);
+            setPreviewUrl(dataUrl || null);
+          } catch (error) {
+            console.error('Failed to render PDF:', error);
+            setPreviewUrl(null);
+          }
+        } else {
+          pdfArrayBufferRef.current = null;
+          setTotalPdfPages(1);
+          setCurrentPdfPage(1);
+          setPreviewUrl(imageUrl);
+        }
+      })();
+    }
+
+    setStep('result');
+    setZoomLevel(1);
+    setPanPosition({ x: 0, y: 0 });
+    setIsMarkdownEditMode(false);
+    setCroppedImagesMap(new Map());
+    setCroppedImagesReady(false);
+    lastProcessedBlocksRef.current = '';
+    // Depend on the document id + s3Key, not the object, to avoid re-running
+    // on every render.
+    // eslint-disable-next-line react-hooks/exhaustive-deps
+  }, [
+    currentDocumentId,
+    currentDocument?.s3Key,
+    fetchS3ImageUrl,
+    updateDocument,
+  ]);
+
+  // Lazily fetch a run's result from S3 when its tab is selected but the result
+  // hasn't been loaded yet (e.g. after a page reload).
+  useEffect(() => {
+    if (!currentDocument || !selectedRun) return;
+    if (selectedRun.result || selectedRun.status !== 'completed') return;
+    (async () => {
+      const result = await fetchRunResult(
+        currentDocument.id,
+        selectedRun.model,
+      );
+      if (result) {
+        updateRun(currentDocument.id, selectedRun.model, { result });
+      }
+    })();
+    // eslint-disable-next-line react-hooks/exhaustive-deps
+  }, [
+    currentDocumentId,
+    selectedRun?.model,
+    selectedRun?.status,
+    selectedRun?.result,
+    fetchRunResult,
+    updateRun,
+  ]);
+
+  // Ensure previewUrl is set when step changes to result
+  useEffect(() => {
+    if (step === 'result' && !previewUrl) {
+      const docS3Key = currentDocument?.s3Key;
+      if (!currentDocument || !docS3Key) return;
+
+      (async () => {
+        const imageUrl = await fetchS3ImageUrl(docS3Key);
+        if (!imageUrl) return;
+
+        // Check if it's a PDF - render first page to image
+        if (currentDocument.filename.toLowerCase().endsWith('.pdf')) {
+          try {
+            const response = await fetch(imageUrl);
+            const arrayBuffer = await response.arrayBuffer();
+            pdfArrayBufferRef.current = arrayBuffer;
+            const { dataUrl, totalPages } = await renderPdfToImage(
+              arrayBuffer,
+              1,
+            );
             setTotalPdfPages(totalPages);
             setCurrentPdfPage(1);
             if (dataUrl) {
@@ -267,7 +348,7 @@ function OcrPage() {
         }
       })();
     }
-  }, [step, previewUrl, currentJob, jobs, processingJobId, fetchS3ImageUrl]);
+  }, [step, previewUrl, currentDocument, fetchS3ImageUrl]);
 
   // Generate cropped image for selected block modal
   useEffect(() => {
@@ -287,8 +368,8 @@ function OcrPage() {
     let structWidth = 0;
     let structHeight = 0;
 
-    if (currentJob?.result?.results?.[0]) {
-      const resultData = currentJob.result.results[0];
+    if (selectedRun?.result?.results?.[0]) {
+      const resultData = selectedRun.result.results[0];
       if ('width' in resultData && 'height' in resultData) {
         const structData = resultData as OcrStructureResultData;
         structWidth = structData.width;
@@ -333,7 +414,7 @@ function OcrPage() {
       console.error('Failed to crop image for preview:', e);
       setSelectedBlockImage(null);
     }
-  }, [selectedBlock, currentJob]);
+  }, [selectedBlock, selectedRun]);
 
   // Close modal on ESC key
   useEffect(() => {
@@ -345,9 +426,6 @@ function OcrPage() {
     window.addEventListener('keydown', handleKeyDown);
     return () => window.removeEventListener('keydown', handleKeyDown);
   }, [selectedBlock]);
-
-  // Max file size: 100MB (using presigned URL for files > 5MB)
-  const MAX_FILE_SIZE = 100 * 1024 * 1024;
 
   // File handling
   const handleFileSelect = useCallback(async (file: File) => {
@@ -378,7 +456,10 @@ function OcrPage() {
 
         // Render PDF first page to image for preview
         pdfArrayBufferRef.current = arrayBufferCopy;
-        const { dataUrl: pdfPreviewUrl, totalPages } = await renderPdfToImage(arrayBufferCopy, 1);
+        const { dataUrl: pdfPreviewUrl, totalPages } = await renderPdfToImage(
+          arrayBufferCopy,
+          1,
+        );
         if (!pdfPreviewUrl) {
           alert('Failed to render PDF preview');
           return;
@@ -406,20 +487,12 @@ function OcrPage() {
     }
   }, []);
 
-  // Supported file types
-  const supportedTypes = [
-    'image/png',
-    'image/jpeg',
-    'image/tiff',
-    'application/pdf',
-  ];
-
   const handleDrop = useCallback(
     (e: React.DragEvent) => {
       e.preventDefault();
       setIsDragging(false);
       const file = e.dataTransfer.files[0];
-      if (file && supportedTypes.includes(file.type)) {
+      if (file && SUPPORTED_FILE_TYPES.includes(file.type)) {
         handleFileSelect(file);
       }
     },
@@ -450,23 +523,30 @@ function OcrPage() {
   }, []);
 
   // PDF page navigation
-  const handlePdfPageChange = useCallback(async (newPage: number) => {
-    if (!pdfArrayBufferRef.current || newPage < 1 || newPage > totalPdfPages) return;
+  const handlePdfPageChange = useCallback(
+    async (newPage: number) => {
+      if (!pdfArrayBufferRef.current || newPage < 1 || newPage > totalPdfPages)
+        return;
 
-    try {
-      const { dataUrl } = await renderPdfToImage(pdfArrayBufferRef.current, newPage);
-      if (dataUrl) {
-        setCurrentPdfPage(newPage);
-        setPreviewUrl(dataUrl);
-        // Reset cropped images for new page
-        setCroppedImagesMap(new Map());
-        setCroppedImagesReady(false);
-        lastProcessedBlocksRef.current = '';
+      try {
+        const { dataUrl } = await renderPdfToImage(
+          pdfArrayBufferRef.current,
+          newPage,
+        );
+        if (dataUrl) {
+          setCurrentPdfPage(newPage);
+          setPreviewUrl(dataUrl);
+          // Reset cropped images for new page
+          setCroppedImagesMap(new Map());
+          setCroppedImagesReady(false);
+          lastProcessedBlocksRef.current = '';
+        }
+      } catch (error) {
+        console.error('Error rendering PDF page:', error);
       }
-    } catch (error) {
-      console.error('Error rendering PDF page:', error);
-    }
-  }, [totalPdfPages]);
+    },
+    [totalPdfPages],
+  );
 
   const handleWheel = useCallback((e: React.WheelEvent) => {
     if (e.ctrlKey || e.metaKey) {
@@ -540,27 +620,31 @@ function OcrPage() {
     );
   }, []);
 
-  // Polling for job status
-  const pollTimeoutRef = useRef<ReturnType<typeof setTimeout> | null>(null);
-  const jobStartTimeRef = useRef<number | null>(null);
+  // Polling for run status — Map keyed by `${documentId}::${model}` so multiple
+  // model runs on one document can poll concurrently without cancelling each
+  // other (single shared timer would only track the latest run).
+  const pollTimersRef = useRef<Map<string, ReturnType<typeof setTimeout>>>(
+    new Map(),
+  );
+  const runStartTimesRef = useRef<Map<string, number>>(new Map());
 
-  // Cleanup polling on unmount
+  // Cleanup all polling on unmount
   useEffect(() => {
+    const timers = pollTimersRef.current;
     return () => {
-      if (pollTimeoutRef.current) {
-        clearTimeout(pollTimeoutRef.current);
-        pollTimeoutRef.current = null;
-      }
+      timers.forEach((t) => clearTimeout(t));
+      timers.clear();
     };
   }, []);
 
-  const pollJobStatus = useCallback(
-    async (jobId: string) => {
+  const pollRun = useCallback(
+    async (documentId: string, model: OcrModel) => {
       const apiUrl = runtimeConfig.apiUrl || runtimeConfig.apis?.ocr;
       if (!apiUrl) return;
+      const key = `${documentId}::${model}`;
 
       try {
-        const response = await fetch(`${apiUrl}/ocr/${jobId}`, {
+        const response = await fetch(`${apiUrl}/ocr/${documentId}/${model}`, {
           headers: {
             Authorization: auth.user?.id_token || '',
             'Content-Type': 'application/json',
@@ -572,58 +656,111 @@ function OcrPage() {
         const data = await response.json();
 
         if (data.status === 'completed') {
-          const processingTimeMs = jobStartTimeRef.current
-            ? Date.now() - jobStartTimeRef.current
-            : undefined;
-          updateJob(jobId, {
+          const start = runStartTimesRef.current.get(key);
+          const processingTimeMs = start ? Date.now() - start : undefined;
+          updateRun(documentId, model, {
             status: 'completed',
             result: data.result,
             processingTimeMs,
           });
-          jobStartTimeRef.current = null;
+          runStartTimesRef.current.delete(key);
+          pollTimersRef.current.delete(key);
           setIsProcessing(false);
-          setProcessingJobId(null);
-          setStep('result');
         } else if (data.status === 'failed') {
-          updateJob(jobId, {
-            status: 'failed',
-          });
-          jobStartTimeRef.current = null;
+          updateRun(documentId, model, { status: 'failed' });
+          runStartTimesRef.current.delete(key);
+          pollTimersRef.current.delete(key);
           setIsProcessing(false);
-          setProcessingJobId(null);
           alert(data.error || 'Processing failed');
         } else {
-          // Still processing, poll again (with cleanup support)
-          pollTimeoutRef.current = setTimeout(() => pollJobStatus(jobId), 3000);
+          // Still processing, poll again
+          pollTimersRef.current.set(
+            key,
+            setTimeout(() => pollRun(documentId, model), 3000),
+          );
         }
       } catch (error) {
         console.error('Poll error:', error);
-        pollTimeoutRef.current = setTimeout(() => pollJobStatus(jobId), 5000);
+        pollTimersRef.current.set(
+          key,
+          setTimeout(() => pollRun(documentId, model), 5000),
+        );
       }
     },
-    [runtimeConfig, auth.user?.id_token, updateJob],
+    [runtimeConfig, auth.user?.id_token, updateRun],
   );
 
-  // Submit job - always upload to S3
+  // Helper: fire the OCR request for one (document, model) run and poll it.
+  const startRun = useCallback(
+    async (documentId: string, s3Key: string, filename: string) => {
+      if (!apiUrl) throw new Error('API URL not configured');
+      const key = `${documentId}::${selectedModel}`;
+      runStartTimesRef.current.set(key, Date.now());
+
+      const response = await fetch(`${apiUrl}/ocr`, {
+        method: 'POST',
+        headers: {
+          Authorization: auth.user?.id_token || '',
+          'Content-Type': 'application/json',
+        },
+        body: JSON.stringify({
+          s3_key: s3Key,
+          document_id: documentId,
+          filename,
+          model: selectedModel,
+          family: getFamilyForModel(selectedModel),
+          options: modelOptions,
+        }),
+      });
+      if (!response.ok) {
+        throw new Error(`HTTP error! status: ${response.status}`);
+      }
+      const data = await response.json();
+      return data.document_id as string;
+    },
+    [apiUrl, auth.user?.id_token, selectedModel, modelOptions],
+  );
+
+  // Submit: first run (new file → upload) or additional run (reuse document).
   const handleSubmit = useCallback(async () => {
-    if (!imageData) return;
+    const newRun: OcrRun = {
+      model: selectedModel,
+      family: getFamilyForModel(selectedModel),
+      modelOptions,
+      status: 'processing',
+      createdAt: new Date(),
+    };
 
-    // Clear any existing poll before starting new job
-    if (pollTimeoutRef.current) {
-      clearTimeout(pollTimeoutRef.current);
-      pollTimeoutRef.current = null;
+    // --- Additional run on an already-uploaded document (no re-upload) ---
+    if (currentDocument?.s3Key) {
+      const documentId = currentDocument.id;
+      try {
+        upsertRun(documentId, newRun);
+        setCurrentModel(selectedModel);
+        setStep('result');
+        await startRun(
+          documentId,
+          currentDocument.s3Key,
+          currentDocument.filename,
+        );
+        pollRun(documentId, selectedModel);
+      } catch (err) {
+        console.error('Submit error (additional run):', err);
+        updateRun(documentId, selectedModel, { status: 'failed' });
+        alert('Failed to submit OCR request. Please try again.');
+      }
+      return;
     }
-    setIsProcessing(true);
-    jobStartTimeRef.current = Date.now();
 
-    const jobId = `job-${Date.now()}`;
+    // --- First run: upload the file, create the document ---
+    if (!imageData) return;
+    setIsProcessing(true);
+    let realDocumentId = '';
 
     try {
-      if (!apiUrl) {
-        throw new Error('API URL not configured');
-      }
+      if (!apiUrl) throw new Error('API URL not configured');
 
-      // Always upload to S3 first
+      // Upload to S3 via presigned URL
       const uploadResponse = await fetch(`${apiUrl}/upload`, {
         method: 'POST',
         headers: {
@@ -637,21 +774,21 @@ function OcrPage() {
             : 'image/jpeg',
         }),
       });
-
       if (!uploadResponse.ok) {
         throw new Error('Failed to get upload URL');
       }
-
       const uploadData = await uploadResponse.json();
-      const { upload_url, s3_key, job_id: presignedJobId } = uploadData;
+      // The presigned step issues the real document_id (input is stored under
+      // it). Use it for the run so input + results share one folder.
+      const { upload_url, s3_key } = uploadData;
+      realDocumentId = uploadData.document_id;
 
-      // Convert base64 to binary and upload to S3
+      // Convert base64 to binary and PUT to S3
       const binaryString = atob(imageData.base64);
       const bytes = new Uint8Array(binaryString.length);
       for (let i = 0; i < binaryString.length; i++) {
         bytes[i] = binaryString.charCodeAt(i);
       }
-
       const s3UploadResponse = await fetch(upload_url, {
         method: 'PUT',
         body: bytes,
@@ -661,165 +798,77 @@ function OcrPage() {
             : 'image/jpeg',
         },
       });
-
       if (!s3UploadResponse.ok) {
         throw new Error('Failed to upload file to S3');
       }
 
-      // Create job with s3Key (not imageData)
-      const newJob: OcrJob = {
-        id: jobId,
+      // Create the document locally with its first run, keyed by the real
+      // document_id from the presigned step (input + results share it).
+      addDocument({
+        id: realDocumentId,
         filename: imageData.filename,
-        model: selectedModel,
-        modelOptions: modelOptions,
-        status: 'processing',
-        createdAt: new Date(),
         s3Key: s3_key,
         imageAvailable: true,
-      };
-
-      addJob(newJob);
-
-      // Submit OCR request with s3_key
-      const response = await fetch(`${apiUrl}/ocr`, {
-        method: 'POST',
-        headers: {
-          Authorization: auth.user?.id_token || '',
-          'Content-Type': 'application/json',
-        },
-        body: JSON.stringify({
-          s3_key: s3_key,
-          job_id: presignedJobId,
-          filename: imageData.filename,
-          model: selectedModel,
-          options: modelOptions,
-        }),
+        createdAt: new Date(),
+        runs: [newRun],
       });
+      setCurrentModel(selectedModel);
 
-      if (!response.ok) {
-        throw new Error(`HTTP error! status: ${response.status}`);
-      }
+      // Submit OCR request with the real document_id
+      await startRun(realDocumentId, s3_key, imageData.filename);
 
-      const data = await response.json();
-      const backendJobId = data.job_id;
-
-      // Replace the local job ID with the backend job_id and update s3Key
-      replaceJobId(jobId, backendJobId);
-      updateJob(backendJobId, { s3Key: s3_key });
-      setProcessingJobId(backendJobId);
-
-      // Start polling
-      pollJobStatus(backendJobId);
+      setIsProcessing(false);
+      setStep('result');
+      pollRun(realDocumentId, selectedModel);
     } catch (err) {
       console.error('Submit error:', err);
-      // If job was added, mark as failed
-      updateJob(jobId, { status: 'failed' });
+      if (realDocumentId) {
+        updateRun(realDocumentId, selectedModel, { status: 'failed' });
+      }
       setIsProcessing(false);
       alert('Failed to submit OCR request. Please try again.');
     }
   }, [
+    currentDocument,
     imageData,
     selectedModel,
     modelOptions,
     auth.user?.id_token,
     apiUrl,
-    addJob,
-    updateJob,
-    replaceJobId,
-    pollJobStatus,
+    addDocument,
+    upsertRun,
+    updateRun,
+    setCurrentModel,
+    startRun,
+    pollRun,
   ]);
 
-  // Retry: Load image from S3 and go to preview step
-  const handleRetry = useCallback(async () => {
-    if (!currentJob?.s3Key) return;
+  // "Run another model": keep the current document selected (so handleSubmit
+  // reuses its uploaded input without re-uploading) and go to the options step
+  // to pick a different model. Defaults to a model not yet run on this file.
+  const handleRunAnotherModel = useCallback(() => {
+    if (!currentDocument) return;
+    const usedModels = new Set(currentDocument.runs.map((r) => r.model));
+    const nextModel: OcrModel =
+      (
+        [
+          'paddleocr-vl',
+          'pp-ocrv5',
+          'pp-structurev3',
+          'gundam',
+          'base',
+        ] as OcrModel[]
+      ).find((m) => !usedModels.has(m)) ?? 'paddleocr-vl';
+    setSelectedModel(nextModel);
+    setModelOptions(getDefaultOptionsForModel(nextModel));
+    setStep('options');
+  }, [currentDocument]);
 
-    try {
-      // Fetch presigned URL for the image
-      const imageUrl = await fetchS3ImageUrl(currentJob.s3Key);
-      if (!imageUrl) {
-        alert('Failed to load image from S3');
-        return;
-      }
-
-      // Fetch file from S3
-      const response = await fetch(imageUrl);
-      const blob = await response.blob();
-
-      // Check if it's a PDF
-      const isPdf = currentJob.filename.toLowerCase().endsWith('.pdf');
-
-      if (isPdf) {
-        // For PDF: convert to base64 and render first page for preview
-        const arrayBuffer = await blob.arrayBuffer();
-        const uint8Array = new Uint8Array(arrayBuffer);
-        let binaryString = '';
-        for (let i = 0; i < uint8Array.length; i++) {
-          binaryString += String.fromCharCode(uint8Array[i]);
-        }
-        const base64 = btoa(binaryString);
-
-        // Render PDF first page for preview
-        pdfArrayBufferRef.current = arrayBuffer;
-        const { dataUrl: pdfPreviewUrl, totalPages } = await renderPdfToImage(arrayBuffer, 1);
-        if (!pdfPreviewUrl) {
-          alert('Failed to render PDF preview');
-          return;
-        }
-
-        setTotalPdfPages(totalPages);
-        setCurrentPdfPage(1);
-        setImageData({ base64, filename: currentJob.filename });
-        setPreviewUrl(pdfPreviewUrl);
-
-        // Restore previous model and options
-        setSelectedModel(currentJob.model);
-        if (currentJob.modelOptions) {
-          setModelOptions(currentJob.modelOptions);
-        }
-
-        setCurrentJobId(null);
-        setStep('options');
-      } else {
-        // For images: use FileReader
-        const reader = new FileReader();
-        reader.onload = () => {
-          const dataUrl = reader.result as string;
-          const base64 = dataUrl.split(',')[1];
-
-          setImageData({ base64, filename: currentJob.filename });
-          setPreviewUrl(dataUrl);
-
-          // Restore previous model and options
-          setSelectedModel(currentJob.model);
-          if (currentJob.modelOptions) {
-            setModelOptions(currentJob.modelOptions);
-          }
-
-          setCurrentJobId(null);
-          setStep('options');
-        };
-        reader.readAsDataURL(blob);
-      }
-    } catch (err) {
-      console.error('Retry error:', err);
-      alert('Failed to load image for retry');
-    }
-  }, [currentJob, fetchS3ImageUrl, setCurrentJobId]);
-
-  // Get result data for current page
+  // Get result data for the selected run's current page
   const getResultData = (): OcrResultData | null => {
-    // Try multiple ways to find the job
-    let job = currentJob;
-    if (!job && processingJobId) {
-      job = jobs.find((j) => j.id === processingJobId);
-    }
-    if (!job && currentJobId) {
-      job = jobs.find((j) => j.id === currentJobId);
-    }
-
-    if (!job?.result) return null;
+    if (!selectedRun?.result) return null;
     // Handle various response formats
-    const result = job.result as {
+    const result = selectedRun.result as {
       res?: OcrResultData;
       results?: Array<{ res?: OcrResultData } | OcrResultData>;
     };
@@ -840,6 +889,21 @@ function OcrPage() {
     // Format: { res: {...} } (single result)
     if (result.res) return result.res;
 
+    // Content-only result (e.g. Unlimited-OCR): no per-block structure, just
+    // markdown `content`. Synthesise an empty structure result so the result
+    // view renders (loading clears) and the markdown tab shows `content`.
+    const contentResult = selectedRun.result as { content?: string };
+    if (contentResult.content) {
+      return {
+        input_path: '',
+        page_index: null,
+        page_count: null,
+        width: 0,
+        height: 0,
+        parsing_res_list: [],
+      } as OcrStructureResultData;
+    }
+
     return null;
   };
 
@@ -847,7 +911,8 @@ function OcrPage() {
 
   // Generate cropped images for BlocksView when in blocks tab
   useEffect(() => {
-    if (resultTab !== 'blocks' || !resultData || isOcrV5Result(resultData)) return;
+    if (resultTab !== 'blocks' || !resultData || isOcrV5Result(resultData))
+      return;
     if (!isStructureResult(resultData)) return;
 
     const structData = resultData as OcrStructureResultData;
@@ -868,7 +933,11 @@ function OcrPage() {
     ) {
       lastProcessedBlocksRef.current = blocksKey;
       try {
-        const croppedMap = generateCroppedImages(blocks, structData, imgElement);
+        const croppedMap = generateCroppedImages(
+          blocks,
+          structData,
+          imgElement,
+        );
         if (croppedMap.size > 0) {
           setCroppedImagesMap(croppedMap);
         }
@@ -904,10 +973,20 @@ function OcrPage() {
     setPreviewUrl(null);
   }, []);
 
+  // From the options step that was reached via "Run another model", return to
+  // the existing results instead of discarding them (which "Change Document"
+  // does). The previously viewed run is still selected, so it shows again.
+  const handleBackToResult = useCallback(() => {
+    setStep('result');
+  }, []);
+
   const handleNewDocument = useCallback(() => {
     setStep('upload');
-    setCurrentJobId(null);
-  }, [setCurrentJobId]);
+    setImageData(null);
+    setPreviewUrl(null);
+    setCurrentDocumentId(null);
+    setCurrentModel(null);
+  }, [setCurrentDocumentId, setCurrentModel]);
 
   // Toast component
   const renderToast = () =>
@@ -969,7 +1048,7 @@ function OcrPage() {
         return (
           <OptionsStep
             previewUrl={previewUrl}
-            imageFilename={imageData?.filename}
+            imageFilename={imageData?.filename ?? currentDocument?.filename}
             selectedModel={selectedModel}
             modelOptions={modelOptions}
             isProcessing={isProcessing}
@@ -978,69 +1057,95 @@ function OcrPage() {
             setModelOptions={setModelOptions}
             handleSubmit={handleSubmit}
             onBack={handleBackToUpload}
+            canGoBackToResult={(currentDocument?.runs.length ?? 0) > 0}
+            onBackToResult={handleBackToResult}
           />
         );
       case 'result': {
-        const imageLoading = !resultData || (!!previewUrl && loadedImageUrl !== previewUrl);
+        // Show the loading overlay only until the OCR result arrives. The
+        // result (esp. markdown text) must not depend on the preview image
+        // finishing/ succeeding to load — image readiness is handled inside
+        // ImagePanel (bbox overlays gate on loadedImageUrl separately).
+        const imageLoading = !resultData;
         return (
-          <div style={{ position: 'relative', flex: 1, display: 'flex', minHeight: 0 }}>
+          <div
+            style={{
+              position: 'relative',
+              flex: 1,
+              display: 'flex',
+              minHeight: 0,
+            }}
+          >
             {imageLoading && (
-              <div style={{
-                position: 'absolute',
-                inset: 0,
-                zIndex: 10,
-                display: 'flex',
-                alignItems: 'center',
-                justifyContent: 'center',
-                background: 'rgba(0, 0, 0, 0.85)',
-                backdropFilter: 'blur(4px)',
-                color: '#999',
-                fontSize: '15px',
-              }}>
-                <span style={{ color: '#aaa' }}>Loading...</span>
+              <div
+                style={{
+                  position: 'absolute',
+                  inset: 0,
+                  zIndex: 10,
+                  display: 'flex',
+                  flexDirection: 'column',
+                  alignItems: 'center',
+                  justifyContent: 'center',
+                  background: 'rgba(0, 0, 0, 0.85)',
+                  backdropFilter: 'blur(4px)',
+                }}
+              >
+                <div className="processing-spinner" />
+                <div className="processing-text">
+                  {selectedRunWaiting
+                    ? `Running ${selectedRun?.model ?? 'model'}...`
+                    : 'Loading...'}
+                </div>
+                {selectedRunWaiting && (
+                  <div className="processing-subtext">
+                    {waitElapsedSec}s elapsed — this model can take a while
+                  </div>
+                )}
               </div>
             )}
-            {resultData && <ResultStep
-            resultData={resultData}
-            resultTab={resultTab}
-            setResultTab={setResultTab}
-            hoveredBlockId={hoveredBlockId}
-            setHoveredBlockId={setHoveredBlockId}
-            setSelectedBlock={setSelectedBlock}
-            previewUrl={previewUrl}
-            loadedImageUrl={loadedImageUrl}
-            resultImageRef={resultImageRef}
-            imageContainerRef={imageContainerRef}
-            showBbox={showBbox}
-            setShowBbox={setShowBbox}
-            zoomLevel={zoomLevel}
-            panPosition={panPosition}
-            isPanning={isPanning}
-            handleZoomIn={handleZoomIn}
-            handleZoomOut={handleZoomOut}
-            handleZoomFit={handleZoomFit}
-            handleWheel={handleWheel}
-            handleMouseDown={handleMouseDown}
-            handleRetry={handleRetry}
-            handleNewDocument={handleNewDocument}
-            currentPdfPage={currentPdfPage}
-            totalPdfPages={totalPdfPages}
-            handlePdfPageChange={handlePdfPageChange}
-            canRetry={!!currentJob?.s3Key}
-            setLoadedImageUrl={setLoadedImageUrl}
-            currentJob={currentJob}
-            jobs={jobs}
-            processingJobId={processingJobId}
-            isMarkdownEditMode={isMarkdownEditMode}
-            setIsMarkdownEditMode={setIsMarkdownEditMode}
-            updateJob={updateJob}
-            copyToClipboard={copyToClipboard}
-            croppedImagesMap={croppedImagesMap}
-            croppedImagesReady={croppedImagesReady}
-            setCroppedImagesMap={setCroppedImagesMap}
-            setCroppedImagesReady={setCroppedImagesReady}
-            lastProcessedBlocksRef={lastProcessedBlocksRef}
-          />}
+            {resultData && (
+              <ResultStep
+                resultData={resultData}
+                resultTab={resultTab}
+                setResultTab={setResultTab}
+                hoveredBlockId={hoveredBlockId}
+                setHoveredBlockId={setHoveredBlockId}
+                setSelectedBlock={setSelectedBlock}
+                previewUrl={previewUrl}
+                loadedImageUrl={loadedImageUrl}
+                resultImageRef={resultImageRef}
+                imageContainerRef={imageContainerRef}
+                showBbox={showBbox}
+                setShowBbox={setShowBbox}
+                zoomLevel={zoomLevel}
+                panPosition={panPosition}
+                isPanning={isPanning}
+                handleZoomIn={handleZoomIn}
+                handleZoomOut={handleZoomOut}
+                handleZoomFit={handleZoomFit}
+                handleWheel={handleWheel}
+                handleMouseDown={handleMouseDown}
+                handleRunAnotherModel={handleRunAnotherModel}
+                handleNewDocument={handleNewDocument}
+                currentPdfPage={currentPdfPage}
+                totalPdfPages={totalPdfPages}
+                handlePdfPageChange={handlePdfPageChange}
+                setLoadedImageUrl={setLoadedImageUrl}
+                currentDocument={currentDocument}
+                selectedRun={selectedRun}
+                currentModel={currentModel}
+                setCurrentModel={setCurrentModel}
+                isMarkdownEditMode={isMarkdownEditMode}
+                setIsMarkdownEditMode={setIsMarkdownEditMode}
+                updateRun={updateRun}
+                copyToClipboard={copyToClipboard}
+                croppedImagesMap={croppedImagesMap}
+                croppedImagesReady={croppedImagesReady}
+                setCroppedImagesMap={setCroppedImagesMap}
+                setCroppedImagesReady={setCroppedImagesReady}
+                lastProcessedBlocksRef={lastProcessedBlocksRef}
+              />
+            )}
           </div>
         );
       }

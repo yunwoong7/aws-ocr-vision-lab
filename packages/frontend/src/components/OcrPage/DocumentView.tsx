@@ -6,7 +6,11 @@ import {
   OcrStructureResultData,
   OcrJob,
 } from '../../types/ocr';
-import { generateDocumentHTML, generateV5DocumentHTML, generateCroppedImages } from '../../utils/ocrHelpers';
+import {
+  generateDocumentHTML,
+  generateV5DocumentHTML,
+  generateCroppedImages,
+} from '../../utils/ocrHelpers';
 
 export interface DocumentViewProps {
   /** Pass blocks + structData for structure format, null for V5 */
@@ -19,7 +23,9 @@ export interface DocumentViewProps {
   updateJob: (id: string, updates: Partial<OcrJob>) => void;
   croppedImagesMap: Map<number, string>;
   croppedImagesReady: boolean;
-  setCroppedImagesMap: React.Dispatch<React.SetStateAction<Map<number, string>>>;
+  setCroppedImagesMap: React.Dispatch<
+    React.SetStateAction<Map<number, string>>
+  >;
   setCroppedImagesReady: React.Dispatch<React.SetStateAction<boolean>>;
   lastProcessedBlocksRef: React.MutableRefObject<string>;
   loadedImageUrl: string | null;
@@ -67,7 +73,9 @@ export const DocumentView: React.FC<DocumentViewProps> = ({
 
   // V5 format
   if (v5Data) {
-    const htmlContent = job?.editedDocumentHtml?.[currentPdfPage] || generateV5DocumentHTML(v5Data);
+    const htmlContent =
+      job?.editedDocumentHtml?.[currentPdfPage] ||
+      generateV5DocumentHTML(v5Data);
     return (
       <div className="document-view">
         <DocumentEditor
@@ -107,7 +115,11 @@ export const DocumentView: React.FC<DocumentViewProps> = ({
     // Use setTimeout to avoid setState during render
     setTimeout(() => {
       try {
-        const croppedMap = generateCroppedImages(blocks, structData, imgElement);
+        const croppedMap = generateCroppedImages(
+          blocks,
+          structData,
+          imgElement,
+        );
         setCroppedImagesMap(croppedMap);
         setCroppedImagesReady(true);
       } catch (error) {
@@ -128,9 +140,10 @@ export const DocumentView: React.FC<DocumentViewProps> = ({
     savedHtml && savedHtml.includes('[IMAGE:') && hasVisualBlocks;
 
   // Only use cropped images if they belong to the current image
-  const currentCroppedImages = (imageIsReady && croppedImagesReady)
-    ? croppedImagesMap
-    : new Map<number, string>();
+  const currentCroppedImages =
+    imageIsReady && croppedImagesReady
+      ? croppedImagesMap
+      : new Map<number, string>();
 
   const htmlContent =
     savedHtml && !savedHtmlHasPlaceholder

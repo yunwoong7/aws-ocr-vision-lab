@@ -1,8 +1,8 @@
 #!/bin/bash
 # Fetch runtime config from deployed CloudFormation stacks
 
-IDENTITY_STACK="${IDENTITY_STACK:-PaddleOCR-Identity}"
-API_STACK="${API_STACK:-PaddleOCR-Api}"
+IDENTITY_STACK="${IDENTITY_STACK:-AwsOcrLab-Identity}"
+API_STACK="${API_STACK:-AwsOcrLab-Api}"
 AWS_PROFILE="${AWS_PROFILE:-default}"
 OUTPUT_FILE="$(dirname "$0")/../public/runtime-config.json"
 
@@ -19,17 +19,6 @@ API_OUTPUTS=$(AWS_PROFILE=$AWS_PROFILE aws cloudformation describe-stacks \
   --stack-name "$API_STACK" \
   --query 'Stacks[0].Outputs' \
   --output json 2>/dev/null)
-
-# Fallback: try old single stack name
-if [ -z "$IDENTITY_OUTPUTS" ] || [ "$IDENTITY_OUTPUTS" = "null" ]; then
-  echo "Trying legacy stack PaddleOCR-Application..."
-  LEGACY_OUTPUTS=$(AWS_PROFILE=$AWS_PROFILE aws cloudformation describe-stacks \
-    --stack-name "PaddleOCR-Application" \
-    --query 'Stacks[0].Outputs' \
-    --output json 2>/dev/null)
-  IDENTITY_OUTPUTS="$LEGACY_OUTPUTS"
-  API_OUTPUTS="$LEGACY_OUTPUTS"
-fi
 
 if [ -z "$IDENTITY_OUTPUTS" ] || [ "$IDENTITY_OUTPUTS" = "null" ]; then
   echo "Warning: Could not fetch stack outputs. Using existing runtime-config.json if available."

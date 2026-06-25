@@ -1,4 +1,15 @@
-#!/bin/bash
+#!/usr/bin/env bash
+#
+# OCR Vision Lab - teardown. Deletes the SageMaker endpoint (always) and,
+# unless --endpoint-only, every AwsOcrLab-* stack plus orphaned log groups.
+#
+# Uses `set -uo pipefail` (not -e): each AWS call is allowed to fail
+# independently so a single missing resource never aborts the sweep.
+#
+set -uo pipefail
+
+SCRIPT_DIR="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)"
+cd "$SCRIPT_DIR"
 
 echo ""
 echo "==========================================================================="
@@ -42,10 +53,10 @@ echo ""
 delete_endpoint() {
     echo "Searching for SageMaker endpoints..."
 
-    # Find endpoint name from CloudFormation
+    # Find endpoint name from CloudFormation (Endpoint stack output)
     ENDPOINT_NAME=$(aws cloudformation describe-stacks \
-        --stack-name PaddleOCR-Application \
-        --query 'Stacks[0].Outputs[?OutputKey==`EndpointName`].OutputValue' \
+        --stack-name AwsOcrLab-Endpoint \
+        --query 'Stacks[0].Outputs[?contains(OutputKey,`EndpointName`)].OutputValue' \
         --output text 2>/dev/null || echo "")
 
     if [[ -z "$ENDPOINT_NAME" ]] || [[ "$ENDPOINT_NAME" == "None" ]]; then
@@ -133,7 +144,7 @@ delete_endpoint
 # 2. Empty S3 bucket
 echo "Emptying S3 bucket..."
 BUCKET_NAME=$(aws cloudformation describe-stacks \
-    --stack-name PaddleOCR-Infra \
+    --stack-name AwsOcrLab-Infra \
     --query 'Stacks[0].Outputs[?OutputKey==`BucketName`].OutputValue' \
     --output text 2>/dev/null || echo "")
 
@@ -145,7 +156,7 @@ fi
 # 3. Delete ECR images
 echo "Deleting ECR images..."
 ECR_REPO=$(aws cloudformation describe-stacks \
-    --stack-name PaddleOCR-Infra \
+    --stack-name AwsOcrLab-Infra \
     --query 'Stacks[0].Outputs[?OutputKey==`EcrRepositoryName`].OutputValue' \
     --output text 2>/dev/null || echo "")
 
@@ -161,10 +172,14 @@ fi
 echo ""
 echo "Deleting CloudFormation stacks..."
 
+# Reverse dependency order: Frontend -> Api -> Endpoint -> Identity -> Model -> Infra.
 STACKS=(
-    "PaddleOCR-Application"
-    "PaddleOCR-Model"
-    "PaddleOCR-Infra"
+    "AwsOcrLab-Frontend"
+    "AwsOcrLab-Api"
+    "AwsOcrLab-Endpoint"
+    "AwsOcrLab-Identity"
+    "AwsOcrLab-Model"
+    "AwsOcrLab-Infra"
     "ocr-vision-lab-codebuild-deploy"
 )
 

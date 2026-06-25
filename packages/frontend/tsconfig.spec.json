@@ -2,6 +2,9 @@
   "extends": "./tsconfig.json",
   "compilerOptions": {
     "outDir": "../../dist/out-tsc",
+    // Tests are only type-checked, never emitted. noEmit also overrides the
+    // base config's emitDeclarationOnly, which alone trips TS5069.
+    "noEmit": true,
     "types": [
       "vitest/globals",
       "vitest/importMeta",

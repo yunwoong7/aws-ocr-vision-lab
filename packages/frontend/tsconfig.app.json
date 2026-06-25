@@ -2,6 +2,9 @@
   "extends": "./tsconfig.json",
   "compilerOptions": {
     "outDir": "../../dist/packages/frontend/tsc",
+    // Vite produces the bundle; tsc only type-checks. noEmit also overrides the
+    // base config's emitDeclarationOnly, which alone trips TS5069.
+    "noEmit": true,
     "types": [
       "node",
       "@nx/react/typings/cssmodule.d.ts",

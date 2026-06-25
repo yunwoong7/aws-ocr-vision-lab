@@ -91,8 +91,9 @@ OCR Vision Lab은 AWS 인프라에서 [PaddleOCR](https://github.com/PaddlePaddl
 
 ### 사전 요구 사항
 
-- [Node.js](https://nodejs.org/) v18 이상
-- [pnpm](https://pnpm.io/) v8 이상
+- [Node.js](https://nodejs.org/) v22 이상
+- [pnpm](https://pnpm.io/) v10 이상
+- Python 3.12 (로컬 빌드 도구용 — Lambda는 Python 3.14 런타임에서 실행)
 - [AWS CLI](https://aws.amazon.com/cli/) (자격 증명 설정 필요)
 - [AWS CDK](https://aws.amazon.com/cdk/) v2
 
@@ -142,9 +143,12 @@ chmod +x deploy.sh cleanup.sh
 
 ### 스택 구조
 
-1. **PaddleOCR-Infra**: S3 버킷, ECR 저장소, CodeBuild 프로젝트
-2. **PaddleOCR-Model**: S3에 업로드되는 모델 아티팩트 (inference.py)
-3. **PaddleOCR-Application**: Cognito, SageMaker 엔드포인트, API Gateway, Lambda, 프론트엔드
+1. **AwsOcrLab-Infra**: S3 버킷, ECR 저장소, CodeBuild 프로젝트
+2. **AwsOcrLab-Model**: S3에 업로드되는 모델 아티팩트 (inference.py)
+3. **AwsOcrLab-Identity**: Cognito User Pool 및 Identity Pool
+4. **AwsOcrLab-Endpoint**: SageMaker 비동기 추론 엔드포인트 (요청 백로그 기반 1→3 오토스케일링)
+5. **AwsOcrLab-Api**: API Gateway + Lambda 함수
+6. **AwsOcrLab-Frontend**: CloudFront + S3 정적 웹사이트
 
 ### 수동 배포 (로컬)
 

@@ -1,5 +1,13 @@
-// Model types
-export type OcrModel = 'pp-ocrv5' | 'pp-structurev3' | 'paddleocr-vl';
+// Model family types
+export type OcrFamily = 'paddleocr' | 'unlimited-ocr';
+
+// Model (variant) types
+export type OcrModel =
+  | 'pp-ocrv5'
+  | 'pp-structurev3'
+  | 'paddleocr-vl'
+  | 'gundam'
+  | 'base';
 
 // Supported languages for PP-OCRv5 and PP-StructureV3
 export type OcrLanguage =
@@ -229,10 +237,15 @@ export interface PpStructureV3Options {
 // VL model has no additional options
 export type PaddleOcrVlOptions = Record<string, never>;
 
+// Unlimited-OCR variants (gundam/base) have no user-facing options;
+// the sizing preset is implied by the selected variant.
+export type UnlimitedOcrOptions = Record<string, never>;
+
 export type ModelOptions =
   | PpOcrV5Options
   | PpStructureV3Options
-  | PaddleOcrVlOptions;
+  | PaddleOcrVlOptions
+  | UnlimitedOcrOptions;
 
 // Combined OCR options
 export interface OcrOptions {
@@ -356,7 +369,31 @@ export interface OcrStatusResponse {
   error?: string;
 }
 
-// Job history types
+// A single model's OCR result on a document. One document has N runs.
+export interface OcrRun {
+  model: OcrModel;
+  family: OcrFamily;
+  modelOptions?: ModelOptions;
+  status: 'processing' | 'completed' | 'failed';
+  createdAt: Date;
+  result?: OcrResult;
+  processingTimeMs?: number; // Time taken to process in milliseconds
+  editedDocumentHtml?: Record<number, string>; // User-edited document HTML per page
+  editedMarkdown?: Record<number, string>; // User-edited markdown content per page
+}
+
+// An uploaded file. Its input image is shared across all runs.
+export interface OcrDocument {
+  id: string;
+  filename: string;
+  s3Key?: string; // S3 key for the shared input image
+  imageAvailable?: boolean; // Whether the image is available in S3
+  createdAt: Date;
+  runs: OcrRun[];
+}
+
+// Flattened document+run view passed to MarkdownView/DocumentView (which only
+// need id + edit state + model). ResultStep builds this from the selected run.
 export interface OcrJob {
   id: string;
   filename: string;
@@ -365,11 +402,10 @@ export interface OcrJob {
   status: 'processing' | 'completed' | 'failed';
   createdAt: Date;
   result?: OcrResult;
-  s3Key?: string; // S3 key for the uploaded image
-  imageAvailable?: boolean; // Whether the image is available in S3
-  processingTimeMs?: number; // Time taken to process in milliseconds
-  editedDocumentHtml?: Record<number, string>; // User-edited document HTML per page
-  editedMarkdown?: Record<number, string>; // User-edited markdown content per page
+  s3Key?: string;
+  processingTimeMs?: number;
+  editedDocumentHtml?: Record<number, string>;
+  editedMarkdown?: Record<number, string>;
 }
 
 // View types for result display
@@ -390,36 +426,7 @@ export const DEFAULT_PP_STRUCTUREV3_OPTIONS: PpStructureV3Options = {
 };
 
 export const DEFAULT_PADDLEOCR_VL_OPTIONS: PaddleOcrVlOptions = {};
-
-export function getDefaultOptionsForModel(model: OcrModel): ModelOptions {
-  switch (model) {
-    case 'pp-ocrv5':
-      return { ...DEFAULT_PP_OCRV5_OPTIONS };
-    case 'pp-structurev3':
-      return { ...DEFAULT_PP_STRUCTUREV3_OPTIONS };
-    case 'paddleocr-vl':
-      return { ...DEFAULT_PADDLEOCR_VL_OPTIONS };
-  }
-}
-
-// Model info for UI
-export const MODEL_INFO: Record<
-  OcrModel,
-  { title: string; description: string }
-> = {
-  'pp-ocrv5': {
-    title: 'PP-OCRv5',
-    description: 'General-purpose OCR with high accuracy for text extraction',
-  },
-  'pp-structurev3': {
-    title: 'PP-StructureV3',
-    description: 'Document structure analysis with table and layout detection',
-  },
-  'paddleocr-vl': {
-    title: 'PaddleOCR-VL',
-    description: 'Vision-language model for complex document understanding',
-  },
-};
+export const DEFAULT_UNLIMITED_OCR_OPTIONS: UnlimitedOcrOptions = {};
 
 // Option info for UI
 export interface OptionInfo {
@@ -428,33 +435,134 @@ export interface OptionInfo {
   description: string;
 }
 
+const ORIENTATION_OPTION: OptionInfo = {
+  key: 'use_doc_orientation_classify',
+  title: 'Document Orientation Classification',
+  description: 'Automatically detect and correct document orientation',
+};
+const UNWARPING_OPTION: OptionInfo = {
+  key: 'use_doc_unwarping',
+  title: 'Document Unwarping',
+  description: 'Correct perspective distortion and warping in documents',
+};
+const TEXTLINE_OPTION: OptionInfo = {
+  key: 'use_textline_orientation',
+  title: 'Textline Orientation',
+  description: 'Detect and handle rotated text lines',
+};
+
 export const PP_OCRV5_OPTION_INFO: OptionInfo[] = [
-  {
-    key: 'use_doc_orientation_classify',
-    title: 'Document Orientation Classification',
-    description: 'Automatically detect and correct document orientation',
-  },
-  {
-    key: 'use_doc_unwarping',
-    title: 'Document Unwarping',
-    description: 'Correct perspective distortion and warping in documents',
-  },
-  {
-    key: 'use_textline_orientation',
-    title: 'Textline Orientation',
-    description: 'Detect and handle rotated text lines',
-  },
+  ORIENTATION_OPTION,
+  UNWARPING_OPTION,
+  TEXTLINE_OPTION,
 ];
 
 export const PP_STRUCTUREV3_OPTION_INFO: OptionInfo[] = [
-  {
-    key: 'use_doc_orientation_classify',
-    title: 'Document Orientation Classification',
-    description: 'Automatically detect and correct document orientation',
-  },
-  {
-    key: 'use_doc_unwarping',
-    title: 'Document Unwarping',
-    description: 'Correct perspective distortion and warping in documents',
-  },
+  ORIENTATION_OPTION,
+  UNWARPING_OPTION,
 ];
+
+// ---------------------------------------------------------------------------
+// Data-driven model metadata.
+//
+// To add a new model: add its id to OcrModel, then add one MODEL_INFO entry
+// and list it under its family in FAMILY_INFO. The UI (family/variant cards,
+// option toggles, language selector, sidebar label) is fully data-driven off
+// these tables — no per-model `if` branches anywhere.
+// ---------------------------------------------------------------------------
+export interface ModelMeta {
+  family: OcrFamily;
+  title: string;
+  description: string;
+  /** Short badge label shown in the job sidebar (e.g. v5, VL) */
+  shortLabel: string;
+  /** Toggle options shown for this model (empty = no options section) */
+  optionInfo: OptionInfo[];
+  /** Whether the language selector applies to this model */
+  supportsLanguage: boolean;
+  /** Default options applied when this model is selected */
+  defaultOptions: ModelOptions;
+}
+
+export interface FamilyMeta {
+  id: OcrFamily;
+  title: string;
+  description: string;
+  models: OcrModel[];
+}
+
+export const MODEL_INFO: Record<OcrModel, ModelMeta> = {
+  'pp-ocrv5': {
+    family: 'paddleocr',
+    title: 'PP-OCRv5',
+    description: 'General-purpose OCR with high accuracy for text extraction',
+    shortLabel: 'v5',
+    optionInfo: PP_OCRV5_OPTION_INFO,
+    supportsLanguage: true,
+    defaultOptions: DEFAULT_PP_OCRV5_OPTIONS,
+  },
+  'pp-structurev3': {
+    family: 'paddleocr',
+    title: 'PP-StructureV3',
+    description: 'Document structure analysis with table and layout detection',
+    shortLabel: 'Struct',
+    optionInfo: PP_STRUCTUREV3_OPTION_INFO,
+    supportsLanguage: true,
+    defaultOptions: DEFAULT_PP_STRUCTUREV3_OPTIONS,
+  },
+  'paddleocr-vl': {
+    family: 'paddleocr',
+    title: 'PaddleOCR-VL',
+    description: 'Vision-language model for complex document understanding',
+    shortLabel: 'VL',
+    optionInfo: [],
+    supportsLanguage: false,
+    defaultOptions: DEFAULT_PADDLEOCR_VL_OPTIONS,
+  },
+  gundam: {
+    family: 'unlimited-ocr',
+    title: 'Gundam',
+    description:
+      'High-detail single-image parsing (crops the image for fine text)',
+    shortLabel: 'GD',
+    optionInfo: [],
+    supportsLanguage: false,
+    defaultOptions: DEFAULT_UNLIMITED_OCR_OPTIONS,
+  },
+  base: {
+    family: 'unlimited-ocr',
+    title: 'Base',
+    description: 'Balanced single-image and multi-page (PDF) document parsing',
+    shortLabel: 'Base',
+    optionInfo: [],
+    supportsLanguage: false,
+    defaultOptions: DEFAULT_UNLIMITED_OCR_OPTIONS,
+  },
+};
+
+export const FAMILY_INFO: Record<OcrFamily, FamilyMeta> = {
+  paddleocr: {
+    id: 'paddleocr',
+    title: 'PaddleOCR',
+    description:
+      'PaddlePaddle OCR models — text, structure, and vision-language',
+    models: ['pp-ocrv5', 'pp-structurev3', 'paddleocr-vl'],
+  },
+  'unlimited-ocr': {
+    id: 'unlimited-ocr',
+    title: 'Unlimited-OCR',
+    description:
+      'Baidu Unlimited-OCR — long-document parsing vision-language model',
+    models: ['gundam', 'base'],
+  },
+};
+
+export const FAMILY_LIST: FamilyMeta[] = Object.values(FAMILY_INFO);
+
+export function getFamilyForModel(model: OcrModel): OcrFamily {
+  return MODEL_INFO[model].family;
+}
+
+export function getDefaultOptionsForModel(model: OcrModel): ModelOptions {
+  return { ...MODEL_INFO[model].defaultOptions };
+}

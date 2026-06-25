@@ -1,9 +1,13 @@
 """OCR Status Lambda - Check job status from S3"""
 import json
 import os
+import logging
 import boto3
 from botocore.exceptions import ClientError
 import db_utils
+
+logger = logging.getLogger()
+logger.setLevel(logging.INFO)
 
 REGION = os.environ.get("REGION") or os.environ.get("AWS_DEFAULT_REGION", "us-east-1")
 BUCKET_NAME = os.environ["BUCKET_NAME"]
@@ -18,17 +22,19 @@ CORS_HEADERS = {
 
 
 def handler(event, context):
-    print(f"OCR Status request received: {json.dumps(event)}")
-
     try:
         path_params = event.get("pathParameters", {}) or {}
-        job_id = path_params.get("jobId")
+        # Path variable is named {jobId} for API Gateway compatibility, but it
+        # carries the document id.
+        document_id = path_params.get("jobId")
+        model = path_params.get("model")
+        logger.info("OCR status request (document_id=%s, model=%s)", document_id, model)
 
-        if not job_id:
+        if not document_id or not model:
             return {
                 "statusCode": 400,
                 "headers": {"Content-Type": "application/json", **CORS_HEADERS},
-                "body": json.dumps({"error": "jobId is required"}),
+                "body": json.dumps({"error": "documentId and model are required"}),
             }
 
         # Get user ID from Cognito claims
@@ -36,8 +42,9 @@ def handler(event, context):
         claims = authorizer.get("claims", {})
         user_id = claims.get("sub", "anonymous")
 
-        output_key = f"{user_id}/{job_id}/output/result.json"
-        failure_key = f"{user_id}/{job_id}/output/error.json"
+        run_prefix = f"{user_id}/{document_id}/runs/{model}"
+        output_key = f"{run_prefix}/result.json"
+        failure_key = f"{run_prefix}/error.json"
 
         # Check if result exists
         try:
@@ -48,8 +55,8 @@ def handler(event, context):
             result_str = response["Body"].read().decode("utf-8")
             result = json.loads(result_str)
 
-            # Update job status in DuckDB metadata
-            db_utils.update_job_status(user_id, job_id, "completed")
+            # Update run status in document metadata
+            db_utils.update_run_status(user_id, document_id, model, "completed")
 
             return {
                 "statusCode": 200,
@@ -64,7 +71,7 @@ def handler(event, context):
             error_code = e.response.get("Error", {}).get("Code", "")
 
             if error_code not in ("404", "NoSuchKey", "NotFound"):
-                print(f"Unexpected S3 error: {error_code} - {e}")
+                logger.exception("Unexpected S3 error (%s): %s", error_code, e)
                 return {
                     "statusCode": 500,
                     "headers": {"Content-Type": "application/json", **CORS_HEADERS},
@@ -79,8 +86,8 @@ def handler(event, context):
                 failure_str = failure_response["Body"].read().decode("utf-8")
                 failure_result = json.loads(failure_str)
 
-                # Update job status in DuckDB metadata
-                db_utils.update_job_status(user_id, job_id, "failed")
+                # Update run status in document metadata
+                db_utils.update_run_status(user_id, document_id, model, "failed")
 
                 return {
                     "statusCode": 200,
@@ -100,7 +107,7 @@ def handler(event, context):
                 }
 
     except Exception as e:
-        print(f"Error checking OCR status: {str(e)}")
+        logger.exception("Error checking OCR status: %s", e)
 
         return {
             "statusCode": 500,

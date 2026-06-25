@@ -1,7 +1,6 @@
 import React from 'react';
 import { ZoomInIcon, ZoomOutIcon, FitIcon } from './Icons';
 import {
-  OcrBlock,
   OcrResultData,
   OcrV5ResultData,
   OcrStructureResultData,
@@ -56,30 +55,22 @@ export const ImagePanel: React.FC<ImagePanelProps> = ({
   setLoadedImageUrl,
 }) => {
   const isV5Format = resultData ? isOcrV5Result(resultData) : false;
-  const blocks = resultData && isStructureResult(resultData)
-    ? resultData.parsing_res_list
-    : [];
-  const v5Data = isV5Format && resultData ? (resultData as OcrV5ResultData) : null;
+  const blocks =
+    resultData && isStructureResult(resultData)
+      ? resultData.parsing_res_list
+      : [];
+  const v5Data =
+    isV5Format && resultData ? (resultData as OcrV5ResultData) : null;
 
   return (
     <div className="result-image-panel">
       <div className="result-image-header">
         <div className="zoom-controls">
-          <button
-            className="zoom-btn"
-            onClick={handleZoomOut}
-            title="Zoom Out"
-          >
+          <button className="zoom-btn" onClick={handleZoomOut} title="Zoom Out">
             <ZoomOutIcon />
           </button>
-          <span className="zoom-level">
-            {Math.round(zoomLevel * 100)}%
-          </span>
-          <button
-            className="zoom-btn"
-            onClick={handleZoomIn}
-            title="Zoom In"
-          >
+          <span className="zoom-level">{Math.round(zoomLevel * 100)}%</span>
+          <button className="zoom-btn" onClick={handleZoomIn} title="Zoom In">
             <ZoomInIcon />
           </button>
           <button
@@ -90,10 +81,7 @@ export const ImagePanel: React.FC<ImagePanelProps> = ({
             <FitIcon />
           </button>
           <span className="zoom-divider" />
-          <label
-            className="overlay-toggle"
-            title="Show/Hide Detection Overlay"
-          >
+          <label className="overlay-toggle" title="Show/Hide Detection Overlay">
             <input
               type="checkbox"
               checked={showBbox}
@@ -123,8 +111,15 @@ export const ImagePanel: React.FC<ImagePanelProps> = ({
                 src={previewUrl}
                 alt="Document"
                 className="result-image"
-                crossOrigin={previewUrl?.startsWith('data:') ? undefined : 'anonymous'}
+                crossOrigin={
+                  previewUrl?.startsWith('data:') ? undefined : 'anonymous'
+                }
                 onLoad={() => setLoadedImageUrl(previewUrl)}
+                onError={() => {
+                  // Don't leave the UI stuck if the preview image fails to
+                  // load (e.g. expired URL); the result still renders.
+                  console.error('Failed to load preview image:', previewUrl);
+                }}
               />
               {/* Block overlays for Structure format */}
               {showBbox &&
@@ -134,8 +129,9 @@ export const ImagePanel: React.FC<ImagePanelProps> = ({
                 blocks.map((block, idx) => {
                   const [x1, y1, x2, y2] = block.block_bbox;
                   const structData = resultData as OcrStructureResultData;
-                  const imageEl = resultImageRef.current!;
-                  if (!imageEl || !structData.width || !structData.height) return null;
+                  const imageEl = resultImageRef.current;
+                  if (!imageEl || !structData.width || !structData.height)
+                    return null;
                   const scaleX = imageEl.clientWidth / structData.width;
                   const scaleY = imageEl.clientHeight / structData.height;
 
@@ -161,10 +157,14 @@ export const ImagePanel: React.FC<ImagePanelProps> = ({
                 resultImageRef.current &&
                 v5Data.rec_texts.map((_, idx) => {
                   const [x1, y1, x2, y2] = getV5Bbox(v5Data, idx);
-                  if (x1 === 0 && y1 === 0 && x2 === 0 && y2 === 0)
-                    return null;
+                  if (x1 === 0 && y1 === 0 && x2 === 0 && y2 === 0) return null;
                   const imageEl = resultImageRef.current;
-                  if (!imageEl || !imageEl.naturalWidth || !imageEl.naturalHeight) return null;
+                  if (
+                    !imageEl ||
+                    !imageEl.naturalWidth ||
+                    !imageEl.naturalHeight
+                  )
+                    return null;
                   // Use natural dimensions for scaling
                   const scaleX = imageEl.clientWidth / imageEl.naturalWidth;
                   const scaleY = imageEl.clientHeight / imageEl.naturalHeight;
@@ -196,7 +196,14 @@ export const ImagePanel: React.FC<ImagePanelProps> = ({
               disabled={currentPdfPage <= 1}
               title="Previous Page"
             >
-              <svg width="14" height="14" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="2">
+              <svg
+                width="14"
+                height="14"
+                viewBox="0 0 24 24"
+                fill="none"
+                stroke="currentColor"
+                strokeWidth="2"
+              >
                 <polyline points="15 18 9 12 15 6" />
               </svg>
             </button>
@@ -209,7 +216,14 @@ export const ImagePanel: React.FC<ImagePanelProps> = ({
               disabled={currentPdfPage >= totalPdfPages}
               title="Next Page"
             >
-              <svg width="14" height="14" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="2">
+              <svg
+                width="14"
+                height="14"
+                viewBox="0 0 24 24"
+                fill="none"
+                stroke="currentColor"
+                strokeWidth="2"
+              >
                 <polyline points="9 18 15 12 9 6" />
               </svg>
             </button>

@@ -58,7 +58,17 @@ export class OcrBucket extends Construct {
       lifecycleRules: [],
       cors: [
         {
-          allowedHeaders: ['*'],
+          // Headers a browser actually sends on presigned PUT/GET uploads.
+          // Origin stays '*' because presigned URLs are short-lived, scoped
+          // to a single key, and already authorize the request themselves.
+          allowedHeaders: [
+            'Content-Type',
+            'Content-Length',
+            'x-amz-acl',
+            'x-amz-content-sha256',
+            'x-amz-date',
+            'Authorization',
+          ],
           allowedMethods: [
             HttpMethods.GET,
             HttpMethods.PUT,

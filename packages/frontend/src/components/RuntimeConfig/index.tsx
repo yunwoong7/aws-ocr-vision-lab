@@ -6,8 +6,22 @@ import React, {
   useState,
 } from 'react';
 
-// Consider specifying types if desired
-export type IRuntimeConfig = any;
+/**
+ * Shape of the runtime-config.json injected at deploy time by the CDK
+ * RuntimeConfig construct (apiUrl + Cognito wiring). Optional fields keep
+ * this tolerant of partial/local configs.
+ */
+export interface IRuntimeConfig {
+  apiUrl?: string;
+  cognitoProps?: {
+    region: string;
+    identityPoolId: string;
+    userPoolId: string;
+    userPoolWebClientId: string;
+  };
+  apis?: Record<string, string>;
+  [key: string]: unknown;
+}
 
 /**
  * Context for storing the runtimeConfig.
@@ -43,7 +57,7 @@ const RuntimeConfigProvider: React.FC<PropsWithChildren> = ({ children }) => {
           applyOverrides(await (await fetch('/runtime-config.json')).json()),
         );
       } catch {
-        setRuntimeConfig(applyOverrides({ apis: {} } as any));
+        setRuntimeConfig(applyOverrides({ apis: {} }));
       }
     })();
   }, [setRuntimeConfig]);

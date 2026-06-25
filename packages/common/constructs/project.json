@@ -17,7 +17,11 @@
       "executor": "nx:run-commands",
       "outputs": ["{workspaceRoot}/dist/packages/common/constructs/tsc"],
       "options": {
-        "command": "tsc --build tsconfig.lib.json",
+        "commands": [
+          "tsc --build tsconfig.lib.json",
+          "mkdir -p ../../../dist/packages/common/constructs/tsc/src/core/assets && cp src/core/assets/logo.png ../../../dist/packages/common/constructs/tsc/src/core/assets/logo.png"
+        ],
+        "parallel": false,
         "cwd": "{projectRoot}"
       }
     },

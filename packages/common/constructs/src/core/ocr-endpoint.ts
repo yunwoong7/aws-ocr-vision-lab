@@ -5,10 +5,13 @@ import {
   CfnEndpoint,
 } from 'aws-cdk-lib/aws-sagemaker';
 import {
+  CfnScalableTarget,
+  CfnScalingPolicy,
+} from 'aws-cdk-lib/aws-applicationautoscaling';
+import {
   Role,
   ServicePrincipal,
   PolicyStatement,
-  ManagedPolicy,
   Policy,
 } from 'aws-cdk-lib/aws-iam';
 import { Bucket } from 'aws-cdk-lib/aws-s3';
@@ -22,10 +25,26 @@ export interface OcrEndpointProps {
   minCapacity?: number;
   maxCapacity?: number;
   /**
+   * Container environment variables. If omitted, PaddleOCR defaults are used.
+   * Pass an explicit map for other model families (e.g. Unlimited-OCR).
+   */
+  environment?: { [key: string]: string };
+  /**
    * Build trigger custom resource to ensure Docker image is built before SageMaker model creation
    */
   buildTrigger?: CustomResource;
 }
+
+// Default container env for the PaddleOCR family.
+const PADDLEOCR_ENVIRONMENT: { [key: string]: string } = {
+  SAGEMAKER_PROGRAM: 'inference.py',
+  PADDLEOCR_HOME: '/opt/ml/code/.paddleocr',
+  // TorchServe timeout settings for VL model (text-heavy images take longer)
+  TS_DEFAULT_RESPONSE_TIMEOUT: '600',
+  TS_MAX_RESPONSE_SIZE: '104857600',
+  SAGEMAKER_MODEL_SERVER_TIMEOUT: '600',
+  SAGEMAKER_MODEL_SERVER_WORKERS: '1',
+};
 
 export class OcrEndpoint extends Construct {
   public readonly endpointName: string;
@@ -38,12 +57,12 @@ export class OcrEndpoint extends Construct {
     const region = Stack.of(this).region;
     const account = Stack.of(this).account;
 
-    // Execution Role for SageMaker
+    // Execution Role for SageMaker.
+    // No AmazonSageMakerFullAccess managed policy — the explicit policy below
+    // grants exactly what async inference on a custom container needs
+    // (S3 I/O, ECR pull, CloudWatch logs + metrics). Least privilege.
     this.executionRole = new Role(this, 'ExecutionRole', {
       assumedBy: new ServicePrincipal('sagemaker.amazonaws.com'),
-      managedPolicies: [
-        ManagedPolicy.fromAwsManagedPolicyName('AmazonSageMakerFullAccess'),
-      ],
     });
 
     // Create explicit policy with all permissions (instead of using addToPolicy)
@@ -63,13 +82,28 @@ export class OcrEndpoint extends Construct {
             `${props.outputBucket.bucketArn}/*`,
           ],
         }),
-        // ECR access for custom image
+        // ECR auth token — this action cannot be scoped to a resource.
+        new PolicyStatement({
+          actions: ['ecr:GetAuthorizationToken'],
+          resources: ['*'],
+        }),
+        // ECR image pull — scoped to repositories in this account/region.
         new PolicyStatement({
           actions: [
-            'ecr:GetAuthorizationToken',
             'ecr:BatchCheckLayerAvailability',
             'ecr:GetDownloadUrlForLayer',
             'ecr:BatchGetImage',
+          ],
+          resources: [`arn:aws:ecr:${region}:${account}:repository/*`],
+        }),
+        // CloudWatch Logs + metrics (previously covered by SageMakerFullAccess).
+        new PolicyStatement({
+          actions: [
+            'logs:CreateLogGroup',
+            'logs:CreateLogStream',
+            'logs:PutLogEvents',
+            'logs:DescribeLogStreams',
+            'cloudwatch:PutMetricData',
           ],
           resources: ['*'],
         }),
@@ -88,15 +122,7 @@ export class OcrEndpoint extends Construct {
         image: imageUri,
         modelDataUrl: props.modelDataUrl,
         mode: 'SingleModel',
-        environment: {
-          SAGEMAKER_PROGRAM: 'inference.py',
-          PADDLEOCR_HOME: '/opt/ml/code/.paddleocr',
-          // TorchServe timeout settings for VL model (text-heavy images take longer)
-          TS_DEFAULT_RESPONSE_TIMEOUT: '600',
-          TS_MAX_RESPONSE_SIZE: '104857600',
-          SAGEMAKER_MODEL_SERVER_TIMEOUT: '600',
-          SAGEMAKER_MODEL_SERVER_WORKERS: '1',
-        },
+        environment: props.environment ?? PADDLEOCR_ENVIRONMENT,
       },
     });
 
@@ -140,6 +166,43 @@ export class OcrEndpoint extends Construct {
     this.endpoint.addDependency(endpointConfig);
 
     this.endpointName = this.endpoint.attrEndpointName;
+
+    // Auto Scaling for the async-inference variant.
+    // Async endpoints scale on the per-instance request backlog rather than
+    // CPU/invocations. minCapacity defaults to 1 (keep one instance warm so
+    // the GPU model stays loaded); raise maxCapacity to absorb bursts.
+    const minCapacity = props.minCapacity ?? 1;
+    const maxCapacity = props.maxCapacity ?? 3;
+    const resourceId = `endpoint/${this.endpointName}/variant/AllTraffic`;
+
+    const scalableTarget = new CfnScalableTarget(this, 'ScalableTarget', {
+      serviceNamespace: 'sagemaker',
+      resourceId,
+      scalableDimension: 'sagemaker:variant:DesiredInstanceCount',
+      minCapacity,
+      maxCapacity,
+    });
+    scalableTarget.node.addDependency(this.endpoint);
+
+    new CfnScalingPolicy(this, 'ScalingPolicy', {
+      policyName: 'BacklogPerInstanceScaling',
+      policyType: 'TargetTrackingScaling',
+      resourceId,
+      scalableDimension: 'sagemaker:variant:DesiredInstanceCount',
+      serviceNamespace: 'sagemaker',
+      targetTrackingScalingPolicyConfiguration: {
+        // Target ~5 queued requests per instance before scaling out.
+        targetValue: 5,
+        customizedMetricSpecification: {
+          metricName: 'ApproximateBacklogSizePerInstance',
+          namespace: 'AWS/SageMaker',
+          dimensions: [{ name: 'EndpointName', value: this.endpointName }],
+          statistic: 'Average',
+        },
+        scaleInCooldown: 300,
+        scaleOutCooldown: 60,
+      },
+    }).node.addDependency(scalableTarget);
 
     new CfnOutput(this, 'EndpointName', {
       value: this.endpointName,

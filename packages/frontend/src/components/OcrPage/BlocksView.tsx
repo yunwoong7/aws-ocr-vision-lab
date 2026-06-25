@@ -19,7 +19,10 @@ export interface BlocksViewProps {
   croppedImagesMap: Map<number, string>;
 }
 
-function renderCroppedImage(block: OcrBlock, croppedImagesMap: Map<number, string>) {
+function renderCroppedImage(
+  block: OcrBlock,
+  croppedImagesMap: Map<number, string>,
+) {
   const croppedSrc = croppedImagesMap.get(block.block_id);
   if (!croppedSrc) {
     return null;
@@ -51,10 +54,12 @@ function processBlocks(blocks: OcrBlock[]): OcrBlock[] {
   const groupMap = new Map<number, number[]>();
   blocks.forEach((block, idx) => {
     const groupId = block.group_id;
-    if (!groupMap.has(groupId)) {
-      groupMap.set(groupId, []);
+    let group = groupMap.get(groupId);
+    if (!group) {
+      group = [];
+      groupMap.set(groupId, group);
     }
-    groupMap.get(groupId)!.push(idx);
+    group.push(idx);
   });
 
   // For each group, distribute multi-line content to empty blocks
@@ -151,7 +156,9 @@ export const BlocksView: React.FC<BlocksViewProps> = ({
               {block.block_label === 'table' ? (
                 <div
                   className="block-content"
-                  dangerouslySetInnerHTML={{ __html: DOMPurify.sanitize(block.block_content) }}
+                  dangerouslySetInnerHTML={{
+                    __html: DOMPurify.sanitize(block.block_content),
+                  }}
                 />
               ) : VISUAL_BLOCK_TYPES.includes(block.block_label) ? (
                 <>

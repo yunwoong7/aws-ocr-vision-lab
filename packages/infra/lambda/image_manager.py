@@ -6,12 +6,16 @@ Lambda function for managing S3 images.
 
 import json
 import os
+import logging
 import unicodedata
 from urllib.parse import unquote
 import boto3
 from botocore.config import Config
 from botocore.exceptions import ClientError
 import db_utils
+
+logger = logging.getLogger()
+logger.setLevel(logging.INFO)
 
 BUCKET_NAME = os.environ.get('BUCKET_NAME')
 REGION = os.environ.get('REGION') or os.environ.get('AWS_DEFAULT_REGION', 'us-east-1')
@@ -62,7 +66,7 @@ def handle_get(event):
         s3_key_nfc = unicodedata.normalize('NFC', s3_key)
         s3_key_nfd = unicodedata.normalize('NFD', s3_key)
 
-        print(f"Looking for s3_key: {s3_key}")
+        logger.info("Looking for s3_key: %s", s3_key)
 
         # Check if object exists (try both NFC and NFD normalization)
         found_key = None
@@ -70,7 +74,7 @@ def handle_get(event):
             try:
                 s3_client.head_object(Bucket=BUCKET_NAME, Key=key_variant)
                 found_key = key_variant
-                print(f"Found object with key: {key_variant}")
+                logger.info("Found object with key: %s", key_variant)
                 break
             except ClientError as e:
                 if e.response['Error']['Code'] != '404':
@@ -78,7 +82,7 @@ def handle_get(event):
                 continue
 
         if not found_key:
-            print(f"Object not found for any key variant")
+            logger.info("Object not found for any key variant")
             return error_response(404, 'Image not found')
 
         s3_key = found_key
@@ -103,7 +107,7 @@ def handle_get(event):
         }
 
     except Exception as e:
-        print(f"Error generating presigned URL: {e}")
+        logger.exception("Error generating presigned URL: %s", e)
         return error_response(500, 'Internal server error')
 
 
@@ -126,9 +130,12 @@ def handle_delete(event):
         s3_key_nfc = unicodedata.normalize('NFC', s3_key)
         s3_key_nfd = unicodedata.normalize('NFD', s3_key)
 
-        # Get job_id from query parameters
+        # Query params: document_id (required for folder ops) and optional model.
+        # - model present  -> delete only that run (runs/{model}/), keep input.
+        # - model absent    -> delete the whole document (input + all runs).
         query_params = event.get('queryStringParameters', {}) or {}
-        job_id = query_params.get('job_id', '')
+        document_id = query_params.get('document_id') or query_params.get('job_id', '')
+        model = query_params.get('model', '')
 
         # Get user_id from Cognito claims
         authorizer = event.get('requestContext', {}).get('authorizer', {})
@@ -137,34 +144,35 @@ def handle_delete(event):
 
         deleted_objects = []
 
-        # Delete the input image (try all normalization variants)
-        for key_variant in [s3_key, s3_key_nfc, s3_key_nfd]:
+        if document_id and user_id and model:
+            # Run-only delete: remove runs/{model}/ prefix, keep the input file.
+            prefix = f"{user_id}/{document_id}/runs/{model}/"
+            deleted_objects += _delete_prefix(prefix)
             try:
-                s3_client.head_object(Bucket=BUCKET_NAME, Key=key_variant)
-                s3_client.delete_object(Bucket=BUCKET_NAME, Key=key_variant)
-                deleted_objects.append(key_variant)
-                break
-            except ClientError as e:
-                if e.response['Error']['Code'] != '404':
-                    print(f"Error deleting input image {key_variant}: {e}")
-
-        # Delete entire job folder if job_id and user_id are available
-        if job_id and user_id:
-            output_prefix = f"{user_id}/{job_id}/"
-            try:
-                paginator = s3_client.get_paginator('list_objects_v2')
-                for page in paginator.paginate(Bucket=BUCKET_NAME, Prefix=output_prefix):
-                    for obj in page.get('Contents', []):
-                        s3_client.delete_object(Bucket=BUCKET_NAME, Key=obj['Key'])
-                        deleted_objects.append(obj['Key'])
+                db_utils.delete_run(user_id, document_id, model)
             except Exception as e:
-                print(f"Error deleting job folder {output_prefix}: {e}")
-
-            # Remove job from DuckDB metadata
+                logger.warning("Error deleting run metadata: %s", e)
+        elif document_id and user_id:
+            # Document delete: remove the entire {user_id}/{document_id}/ tree.
+            prefix = f"{user_id}/{document_id}/"
+            deleted_objects += _delete_prefix(prefix)
             try:
-                db_utils.delete_job(user_id, job_id)
+                db_utils.delete_document(user_id, document_id)
             except Exception as e:
-                print(f"Error deleting job metadata: {e}")
+                logger.warning("Error deleting document metadata: %s", e)
+        else:
+            # Fallback: delete just the single object by key (legacy behaviour).
+            for key_variant in [s3_key, s3_key_nfc, s3_key_nfd]:
+                try:
+                    s3_client.head_object(Bucket=BUCKET_NAME, Key=key_variant)
+                    s3_client.delete_object(Bucket=BUCKET_NAME, Key=key_variant)
+                    deleted_objects.append(key_variant)
+                    break
+                except ClientError as e:
+                    if e.response['Error']['Code'] != '404':
+                        logger.warning(
+                            "Error deleting object %s: %s", key_variant, e
+                        )
 
         return {
             'statusCode': 200,
@@ -176,8 +184,22 @@ def handle_delete(event):
         }
 
     except Exception as e:
-        print(f"Error deleting S3 objects: {e}")
+        logger.exception("Error deleting S3 objects: %s", e)
         return error_response(500, 'Internal server error')
+
+
+def _delete_prefix(prefix):
+    """Delete all objects under an S3 prefix. Returns the deleted keys."""
+    deleted = []
+    try:
+        paginator = s3_client.get_paginator('list_objects_v2')
+        for page in paginator.paginate(Bucket=BUCKET_NAME, Prefix=prefix):
+            for obj in page.get('Contents', []):
+                s3_client.delete_object(Bucket=BUCKET_NAME, Key=obj['Key'])
+                deleted.append(obj['Key'])
+    except Exception as e:
+        logger.warning("Error deleting prefix %s: %s", prefix, e)
+    return deleted
 
 
 def cors_headers():

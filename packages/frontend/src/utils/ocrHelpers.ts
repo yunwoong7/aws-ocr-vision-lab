@@ -193,26 +193,12 @@ export function generateCroppedImages(
       canvas.width = cropW;
       canvas.height = cropH;
 
-      ctx.drawImage(
-        imgElement,
-        cropX,
-        cropY,
-        cropW,
-        cropH,
-        0,
-        0,
-        cropW,
-        cropH,
-      );
+      ctx.drawImage(imgElement, cropX, cropY, cropW, cropH, 0, 0, cropW, cropH);
 
       const dataUrl = canvas.toDataURL('image/jpeg', 0.85);
       result.set(block.block_id, dataUrl);
     } catch (e) {
-      console.error(
-        'Failed to crop image for block',
-        block.block_id,
-        e,
-      );
+      console.error('Failed to crop image for block', block.block_id, e);
     }
   });
 
