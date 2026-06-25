@@ -10,7 +10,7 @@ import cfnresponse
 
 def handler(event, context):
     """Handle Custom Resource events."""
-    print(f"Event: {event}")
+    print(f"RequestType: {event.get('RequestType')}")
 
     if event['RequestType'] == 'Delete':
         cfnresponse.send(event, context, cfnresponse.SUCCESS, {})

@@ -136,9 +136,12 @@ chmod +x deploy.sh cleanup.sh
 
 ### 스택 구조
 
-1. **PaddleOCR-Infra**: S3 버킷, ECR 저장소, CodeBuild 프로젝트
-2. **PaddleOCR-Model**: S3에 업로드되는 모델 아티팩트 (inference.py)
-3. **PaddleOCR-Application**: Cognito, SageMaker 엔드포인트, API Gateway, Lambda, 프론트엔드
+1. **AwsOcrLab-Infra**: S3 버킷, ECR 저장소, CodeBuild 프로젝트
+2. **AwsOcrLab-Model**: S3에 업로드되는 모델 아티팩트 (inference.py)
+3. **AwsOcrLab-Identity**: Cognito User Pool 및 Identity Pool
+4. **AwsOcrLab-Endpoint**: SageMaker 비동기 추론 엔드포인트 (요청 백로그 기반 1→3 오토스케일링)
+5. **AwsOcrLab-Api**: API Gateway + Lambda 함수
+6. **AwsOcrLab-Frontend**: CloudFront + S3 정적 웹사이트
 
 ### 수동 배포 (로컬)
 

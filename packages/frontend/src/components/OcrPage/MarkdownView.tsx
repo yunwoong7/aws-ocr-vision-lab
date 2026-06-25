@@ -3,13 +3,20 @@ import ReactMarkdown from 'react-markdown';
 import remarkBreaks from 'remark-breaks';
 import rehypeRaw from 'rehype-raw';
 import { OcrBlock, OcrV5ResultData, OcrJob } from '../../types/ocr';
-import { generateMarkdown, generateV5Markdown, downloadFile } from '../../utils/ocrHelpers';
+import {
+  generateMarkdown,
+  generateV5Markdown,
+  downloadFile,
+} from '../../utils/ocrHelpers';
 
 export interface MarkdownViewProps {
   /** Pass blocks for structure format, null for V5 */
   blocks: OcrBlock[] | null;
   /** Pass data for V5 format, null for structure */
   v5Data: OcrV5ResultData | null;
+  /** Pre-rendered markdown content (e.g. Unlimited-OCR), used when there are
+   *  no blocks/v5 data to generate markdown from. */
+  content?: string;
   job: OcrJob | undefined;
   currentPdfPage: number;
   isMarkdownEditMode: boolean;
@@ -21,6 +28,7 @@ export interface MarkdownViewProps {
 export const MarkdownView: React.FC<MarkdownViewProps> = ({
   blocks,
   v5Data,
+  content,
   job,
   currentPdfPage,
   isMarkdownEditMode,
@@ -30,15 +38,17 @@ export const MarkdownView: React.FC<MarkdownViewProps> = ({
 }) => {
   const filename = job?.filename?.replace(/\.[^/.]+$/, '') || 'ocr_result';
 
-  // Generate markdown based on format
+  // Generate markdown based on format. Falls back to pre-rendered `content`
+  // (Unlimited-OCR returns markdown directly with no per-block structure).
   const generatedMarkdown = v5Data
     ? generateV5Markdown(v5Data)
-    : blocks
+    : blocks && blocks.length > 0
       ? generateMarkdown(blocks)
-      : '';
+      : content || '';
 
   // Use edited markdown from job if available for current page, otherwise generated
-  const displayContent = job?.editedMarkdown?.[currentPdfPage] || generatedMarkdown;
+  const displayContent =
+    job?.editedMarkdown?.[currentPdfPage] || generatedMarkdown;
 
   const handleMarkdownChange = (content: string) => {
     if (job) {

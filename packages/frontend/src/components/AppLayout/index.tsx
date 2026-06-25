@@ -1,7 +1,7 @@
 import { useAuth } from 'react-oidc-context';
 import * as React from 'react';
-import { createContext, useState, useCallback, useEffect } from 'react';
-import { OcrJob } from '../../types/ocr';
+import { createContext, useState, useCallback } from 'react';
+import { OcrDocument, OcrRun, OcrModel, MODEL_INFO } from '../../types/ocr';
 
 // Icons
 const DocumentIcon = () => (
@@ -43,39 +43,6 @@ const LogOutIcon = () => (
   </svg>
 );
 
-const CheckIcon = () => (
-  <svg viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="2">
-    <polyline points="20 6 9 17 4 12" />
-  </svg>
-);
-
-const AlertIcon = () => (
-  <svg viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="2">
-    <circle cx="12" cy="12" r="10" />
-    <line x1="12" y1="8" x2="12" y2="12" />
-    <line x1="12" y1="16" x2="12.01" y2="16" />
-  </svg>
-);
-
-const LoaderIcon = () => (
-  <svg
-    viewBox="0 0 24 24"
-    fill="none"
-    stroke="currentColor"
-    strokeWidth="2"
-    className="animate-spin"
-  >
-    <line x1="12" y1="2" x2="12" y2="6" />
-    <line x1="12" y1="18" x2="12" y2="22" />
-    <line x1="4.93" y1="4.93" x2="7.76" y2="7.76" />
-    <line x1="16.24" y1="16.24" x2="19.07" y2="19.07" />
-    <line x1="2" y1="12" x2="6" y2="12" />
-    <line x1="18" y1="12" x2="22" y2="12" />
-    <line x1="4.93" y1="19.07" x2="7.76" y2="16.24" />
-    <line x1="16.24" y1="7.76" x2="19.07" y2="4.93" />
-  </svg>
-);
-
 const CloseIcon = () => (
   <svg viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="2">
     <line x1="18" y1="6" x2="6" y2="18" />
@@ -84,34 +51,61 @@ const CloseIcon = () => (
 );
 
 export interface AppLayoutContext {
-  jobs: OcrJob[];
-  setJobs: (jobs: OcrJob[]) => void;
-  addJob: (job: OcrJob) => void;
-  updateJob: (id: string, updates: Partial<OcrJob>) => void;
-  removeJob: (id: string) => void;
-  replaceJobId: (oldId: string, newId: string) => void;
-  currentJobId: string | null;
-  setCurrentJobId: (id: string | null) => void;
+  documents: OcrDocument[];
+  setDocuments: (documents: OcrDocument[]) => void;
+  addDocument: (document: OcrDocument) => void;
+  updateDocument: (id: string, updates: Partial<OcrDocument>) => void;
+  removeDocument: (id: string) => void;
+  replaceDocumentId: (oldId: string, newId: string) => void;
+  // Run helpers (a run = one model's OCR result on a document)
+  upsertRun: (documentId: string, run: OcrRun) => void;
+  updateRun: (
+    documentId: string,
+    model: OcrModel,
+    updates: Partial<OcrRun>,
+  ) => void;
+  removeRun: (documentId: string, model: OcrModel) => void;
+  currentDocumentId: string | null;
+  setCurrentDocumentId: (id: string | null) => void;
+  currentModel: OcrModel | null;
+  setCurrentModel: (model: OcrModel | null) => void;
   onNewJob: () => void;
   setOnNewJob: (handler: () => void) => void;
-  // Callback for deleting S3 files when a job is deleted
-  onDeleteS3Files: (s3Key: string, jobId: string) => Promise<void>;
-  setOnDeleteS3Files: (handler: (s3Key: string, jobId: string) => Promise<void>) => void;
+  // Callback for deleting S3 files when a document/run is deleted
+  onDeleteS3Files: (
+    s3Key: string,
+    documentId: string,
+    model?: OcrModel,
+  ) => Promise<void>;
+  setOnDeleteS3Files: (
+    handler: (
+      s3Key: string,
+      documentId: string,
+      model?: OcrModel,
+    ) => Promise<void>,
+  ) => void;
 }
 
 // eslint-disable-next-line @typescript-eslint/no-empty-function
 const noop = () => {};
+// eslint-disable-next-line @typescript-eslint/no-empty-function
 const noopAsync = async () => {};
 
+// eslint-disable-next-line no-redeclare -- intentional: interface + its context value share one name
 export const AppLayoutContext = createContext<AppLayoutContext>({
-  jobs: [],
-  setJobs: noop,
-  addJob: noop,
-  updateJob: noop,
-  removeJob: noop,
-  replaceJobId: noop,
-  currentJobId: null,
-  setCurrentJobId: noop,
+  documents: [],
+  setDocuments: noop,
+  addDocument: noop,
+  updateDocument: noop,
+  removeDocument: noop,
+  replaceDocumentId: noop,
+  upsertRun: noop,
+  updateRun: noop,
+  removeRun: noop,
+  currentDocumentId: null,
+  setCurrentDocumentId: noop,
+  currentModel: null,
+  setCurrentModel: noop,
   onNewJob: noop,
   setOnNewJob: noop,
   onDeleteS3Files: noopAsync,
@@ -120,53 +114,109 @@ export const AppLayoutContext = createContext<AppLayoutContext>({
 
 const AppLayout: React.FC<React.PropsWithChildren> = ({ children }) => {
   const { user, removeUser, signoutRedirect, clearStaleState } = useAuth();
-  const [jobs, setJobsState] = useState<OcrJob[]>([]);
-  const [currentJobId, setCurrentJobId] = useState<string | null>(null);
+  const [documents, setDocumentsState] = useState<OcrDocument[]>([]);
+  const [currentDocumentId, setCurrentDocumentId] = useState<string | null>(
+    null,
+  );
+  const [currentModel, setCurrentModel] = useState<OcrModel | null>(null);
   const [onNewJobHandler, setOnNewJobHandler] = useState<() => void>(
     () => noop,
   );
   const [onDeleteS3FilesHandler, setOnDeleteS3FilesHandler] = useState<
-    (s3Key: string, jobId: string) => Promise<void>
+    (s3Key: string, documentId: string, model?: OcrModel) => Promise<void>
   >(() => noopAsync);
 
-  // Wrapper to set jobs from API
-  const setJobs = useCallback((newJobs: OcrJob[]) => {
-    setJobsState(newJobs);
+  // Wrapper to set documents from API
+  const setDocuments = useCallback((newDocs: OcrDocument[]) => {
+    setDocumentsState(newDocs);
   }, []);
 
-  const addJob = useCallback((job: OcrJob) => {
-    setJobsState((prev) => [job, ...prev]);
-    setCurrentJobId(job.id);
+  const addDocument = useCallback((doc: OcrDocument) => {
+    setDocumentsState((prev) => [doc, ...prev]);
+    setCurrentDocumentId(doc.id);
   }, []);
 
-  const updateJob = useCallback((id: string, updates: Partial<OcrJob>) => {
-    setJobsState((prev) =>
-      prev.map((job) => (job.id === id ? { ...job, ...updates } : job)),
-    );
-  }, []);
+  const updateDocument = useCallback(
+    (id: string, updates: Partial<OcrDocument>) => {
+      setDocumentsState((prev) =>
+        prev.map((doc) => (doc.id === id ? { ...doc, ...updates } : doc)),
+      );
+    },
+    [],
+  );
 
-  const removeJob = useCallback(
+  const removeDocument = useCallback(
     (id: string) => {
-      // Find the job to get s3Key before removing
-      const job = jobs.find((j) => j.id === id);
-      if (job?.s3Key) {
-        // Delete S3 files asynchronously (pass both s3Key and jobId)
-        onDeleteS3FilesHandler(job.s3Key, job.id).catch((err) => {
+      const doc = documents.find((d) => d.id === id);
+      if (doc?.s3Key) {
+        // Delete the whole document tree (input + all runs) in S3.
+        onDeleteS3FilesHandler(doc.s3Key, doc.id).catch((err) => {
           console.error('Failed to delete S3 files:', err);
         });
       }
-      setJobsState((prev) => prev.filter((job) => job.id !== id));
-      setCurrentJobId((prev) => (prev === id ? null : prev));
+      setDocumentsState((prev) => prev.filter((doc) => doc.id !== id));
+      setCurrentDocumentId((prev) => (prev === id ? null : prev));
     },
-    [jobs, onDeleteS3FilesHandler],
+    [documents, onDeleteS3FilesHandler],
   );
 
-  const replaceJobId = useCallback((oldId: string, newId: string) => {
-    setJobsState((prev) =>
-      prev.map((job) => (job.id === oldId ? { ...job, id: newId } : job)),
+  const replaceDocumentId = useCallback((oldId: string, newId: string) => {
+    setDocumentsState((prev) =>
+      prev.map((doc) => (doc.id === oldId ? { ...doc, id: newId } : doc)),
     );
-    setCurrentJobId((prev) => (prev === oldId ? newId : prev));
+    setCurrentDocumentId((prev) => (prev === oldId ? newId : prev));
   }, []);
+
+  // Add or replace a run (by model) on a document.
+  const upsertRun = useCallback((documentId: string, run: OcrRun) => {
+    setDocumentsState((prev) =>
+      prev.map((doc) =>
+        doc.id === documentId
+          ? {
+              ...doc,
+              runs: [...doc.runs.filter((r) => r.model !== run.model), run],
+            }
+          : doc,
+      ),
+    );
+  }, []);
+
+  const updateRun = useCallback(
+    (documentId: string, model: OcrModel, updates: Partial<OcrRun>) => {
+      setDocumentsState((prev) =>
+        prev.map((doc) =>
+          doc.id === documentId
+            ? {
+                ...doc,
+                runs: doc.runs.map((r) =>
+                  r.model === model ? { ...r, ...updates } : r,
+                ),
+              }
+            : doc,
+        ),
+      );
+    },
+    [],
+  );
+
+  const removeRun = useCallback(
+    (documentId: string, model: OcrModel) => {
+      const doc = documents.find((d) => d.id === documentId);
+      if (doc?.s3Key) {
+        onDeleteS3FilesHandler(doc.s3Key, documentId, model).catch((err) => {
+          console.error('Failed to delete run files:', err);
+        });
+      }
+      setDocumentsState((prev) =>
+        prev.map((doc) =>
+          doc.id === documentId
+            ? { ...doc, runs: doc.runs.filter((r) => r.model !== model) }
+            : doc,
+        ),
+      );
+    },
+    [documents, onDeleteS3FilesHandler],
+  );
 
   const handleSignOut = () => {
     removeUser();
@@ -181,7 +231,8 @@ const AppLayout: React.FC<React.PropsWithChildren> = ({ children }) => {
   };
 
   const handleNewJob = () => {
-    setCurrentJobId(null);
+    setCurrentDocumentId(null);
+    setCurrentModel(null);
     onNewJobHandler();
   };
 
@@ -197,17 +248,6 @@ const AppLayout: React.FC<React.PropsWithChildren> = ({ children }) => {
     return date.toLocaleDateString();
   };
 
-  const getStatusIcon = (status: OcrJob['status']) => {
-    switch (status) {
-      case 'completed':
-        return <CheckIcon />;
-      case 'failed':
-        return <AlertIcon />;
-      default:
-        return <LoaderIcon />;
-    }
-  };
-
   const userInitial = user?.profile?.email?.charAt(0).toUpperCase() || 'U';
   const userName = String(user?.profile?.['cognito:username'] || 'User');
   const userEmail = String(user?.profile?.email || '');
@@ -215,18 +255,24 @@ const AppLayout: React.FC<React.PropsWithChildren> = ({ children }) => {
   return (
     <AppLayoutContext.Provider
       value={{
-        jobs,
-        setJobs,
-        addJob,
-        updateJob,
-        removeJob,
-        replaceJobId,
-        currentJobId,
-        setCurrentJobId,
+        documents,
+        setDocuments,
+        addDocument,
+        updateDocument,
+        removeDocument,
+        replaceDocumentId,
+        upsertRun,
+        updateRun,
+        removeRun,
+        currentDocumentId,
+        setCurrentDocumentId,
+        currentModel,
+        setCurrentModel,
         onNewJob: handleNewJob,
         setOnNewJob: (handler) => setOnNewJobHandler(() => handler),
         onDeleteS3Files: onDeleteS3FilesHandler,
-        setOnDeleteS3Files: (handler) => setOnDeleteS3FilesHandler(() => handler),
+        setOnDeleteS3Files: (handler) =>
+          setOnDeleteS3FilesHandler(() => handler),
       }}
     >
       <div className="app-layout">
@@ -236,10 +282,10 @@ const AppLayout: React.FC<React.PropsWithChildren> = ({ children }) => {
             <div className="sidebar-logo">
               <img
                 src="/logo.png"
-                alt="PaddleOCR Service"
+                alt="AWS OCR Lab"
                 className="sidebar-logo-img"
               />
-              <span>PaddleOCR Service</span>
+              <span>AWS OCR Lab</span>
             </div>
           </div>
 
@@ -256,10 +302,10 @@ const AppLayout: React.FC<React.PropsWithChildren> = ({ children }) => {
               </button>
             </div>
 
-            {/* Job History */}
+            {/* Document History */}
             <div className="sidebar-section">
-              <div className="sidebar-section-title">Recent Jobs</div>
-              {jobs.length === 0 ? (
+              <div className="sidebar-section-title">Recent Files</div>
+              {documents.length === 0 ? (
                 <div
                   style={{
                     padding: '20px',
@@ -268,50 +314,54 @@ const AppLayout: React.FC<React.PropsWithChildren> = ({ children }) => {
                     fontSize: '13px',
                   }}
                 >
-                  No jobs yet
+                  No files yet
                 </div>
               ) : (
-                jobs.map((job) => {
-                  // Check if job is accessible (has s3Key and image is available in S3)
-                  const isAccessible = job.s3Key && job.imageAvailable !== false;
+                documents.map((doc) => {
+                  const isAccessible =
+                    doc.s3Key && doc.imageAvailable !== false;
+                  const anyProcessing = doc.runs.some(
+                    (r) => r.status === 'processing',
+                  );
                   return (
-                  <div
-                    key={job.id}
-                    className={`sidebar-item ${currentJobId === job.id ? 'active' : ''} ${!isAccessible ? 'no-image' : ''}`}
-                    onClick={() => isAccessible && setCurrentJobId(job.id)}
-                    style={{
-                      cursor: isAccessible ? 'pointer' : 'not-allowed',
-                    }}
-                  >
-                    <span className="sidebar-item-icon">
-                      {job.status === 'processing' ? (
-                        <ClockIcon />
-                      ) : (
-                        <DocumentIcon />
-                      )}
-                    </span>
-                    <span className="sidebar-item-text">{job.filename}</span>
-                    <span className="sidebar-item-model">
-                      {job.model === 'paddleocr-vl'
-                        ? 'VL'
-                        : job.model === 'pp-ocrv5'
-                          ? 'v5'
-                          : 'Struct'}
-                    </span>
-                    <span className="sidebar-item-time">
-                      {formatTime(job.createdAt)}
-                    </span>
-                    <button
-                      className="sidebar-item-delete"
-                      onClick={(e) => {
-                        e.stopPropagation();
-                        removeJob(job.id);
+                    <div
+                      key={doc.id}
+                      className={`sidebar-item ${currentDocumentId === doc.id ? 'active' : ''} ${!isAccessible ? 'no-image' : ''}`}
+                      onClick={() =>
+                        isAccessible && setCurrentDocumentId(doc.id)
+                      }
+                      style={{
+                        cursor: isAccessible ? 'pointer' : 'not-allowed',
                       }}
-                      title="Delete"
                     >
-                      <CloseIcon />
-                    </button>
-                  </div>
+                      <span className="sidebar-item-icon">
+                        {anyProcessing ? <ClockIcon /> : <DocumentIcon />}
+                      </span>
+                      <span className="sidebar-item-text">{doc.filename}</span>
+                      <span className="sidebar-item-model">
+                        {doc.runs.length > 0
+                          ? doc.runs
+                              .map(
+                                (r) =>
+                                  MODEL_INFO[r.model]?.shortLabel ?? r.model,
+                              )
+                              .join(', ')
+                          : '—'}
+                      </span>
+                      <span className="sidebar-item-time">
+                        {formatTime(doc.createdAt)}
+                      </span>
+                      <button
+                        className="sidebar-item-delete"
+                        onClick={(e) => {
+                          e.stopPropagation();
+                          removeDocument(doc.id);
+                        }}
+                        title="Delete"
+                      >
+                        <CloseIcon />
+                      </button>
+                    </div>
                   );
                 })
               )}
@@ -319,7 +369,7 @@ const AppLayout: React.FC<React.PropsWithChildren> = ({ children }) => {
 
             {/* Storage Notice */}
             <div className="sidebar-notice">
-              Jobs stored in cloud. Images and results expire after 30 days.
+              Files stored in cloud. Images and results expire after 30 days.
             </div>
           </div>
 

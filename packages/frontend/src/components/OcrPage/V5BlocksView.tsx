@@ -63,10 +63,7 @@ export const V5BlocksView: React.FC<V5BlocksViewProps> = ({
               </span>
             </div>
             <div className="block-body">
-              <div
-                className="block-content"
-                style={{ whiteSpace: 'pre-wrap' }}
-              >
+              <div className="block-content" style={{ whiteSpace: 'pre-wrap' }}>
                 {text}
               </div>
             </div>

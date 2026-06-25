@@ -12,7 +12,8 @@ const __dirname = path.dirname(__filename);
 export interface ApiStackProps extends StackProps {
   userPool: UserPool;
   bucket: Bucket;
-  endpointName: string;
+  paddleEndpointName: string;
+  unlimitedEndpointName: string;
 }
 
 export class ApiStack extends Stack {
@@ -24,7 +25,8 @@ export class ApiStack extends Stack {
     const ocrApi = new OcrApi(this, 'OcrApi', {
       userPool: props.userPool,
       bucket: props.bucket,
-      endpointName: props.endpointName,
+      paddleEndpointName: props.paddleEndpointName,
+      unlimitedEndpointName: props.unlimitedEndpointName,
       lambdaCodePath: path.join(__dirname, '../../lambda'),
     });
 

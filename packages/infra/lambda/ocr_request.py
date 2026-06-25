@@ -3,13 +3,34 @@ import json
 import os
 import uuid
 import base64
+import logging
+import binascii
 import boto3
 from botocore.exceptions import ClientError
 import db_utils
 
+logger = logging.getLogger()
+logger.setLevel(logging.INFO)
+
 REGION = os.environ.get("REGION") or os.environ.get("AWS_DEFAULT_REGION", "us-east-1")
 BUCKET_NAME = os.environ["BUCKET_NAME"]
-ENDPOINT_NAME = os.environ["ENDPOINT_NAME"]
+PADDLE_ENDPOINT_NAME = os.environ["PADDLE_ENDPOINT_NAME"]
+UNLIMITED_ENDPOINT_NAME = os.environ["UNLIMITED_ENDPOINT_NAME"]
+MAX_FILE_SIZE = 100 * 1024 * 1024  # 100MB
+
+# Map model family -> SageMaker endpoint. The frontend sends `family`; we fall
+# back to inferring it from the model id so older clients still work.
+ENDPOINT_BY_FAMILY = {
+    "paddleocr": PADDLE_ENDPOINT_NAME,
+    "unlimited-ocr": UNLIMITED_ENDPOINT_NAME,
+}
+FAMILY_BY_MODEL = {
+    "pp-ocrv5": "paddleocr",
+    "pp-structurev3": "paddleocr",
+    "paddleocr-vl": "paddleocr",
+    "gundam": "unlimited-ocr",
+    "base": "unlimited-ocr",
+}
 
 s3 = boto3.client("s3", region_name=REGION)
 sagemaker = boto3.client("sagemaker-runtime", region_name=REGION)
@@ -36,7 +57,9 @@ def get_content_type(filename: str) -> str:
 
 
 def handler(event, context):
-    print(f"OCR Request received: {json.dumps(event)}")
+    # Do not log the raw event — the body can contain base64 image data and
+    # the request context carries auth tokens.
+    logger.info("OCR request received (method=%s)", event.get("httpMethod"))
 
     try:
         if not event.get("body"):
@@ -49,9 +72,11 @@ def handler(event, context):
         body = json.loads(event["body"])
         image_base64 = body.get("image_base64")
         s3_key = body.get("s3_key")  # For large file uploads via presigned URL
-        presigned_job_id = body.get("job_id")  # job_id from presigned URL response
+        # document_id from presigned URL response (shared input across runs)
+        presigned_document_id = body.get("document_id")
         filename = body.get("filename")
         model = body.get("model", "paddleocr-vl")
+        family = body.get("family") or FAMILY_BY_MODEL.get(model)
         options = body.get("options", {})
 
         # Either image_base64 or s3_key is required
@@ -62,29 +87,56 @@ def handler(event, context):
                 "body": json.dumps({"error": "filename and (image_base64 or s3_key) are required"}),
             }
 
+        # Resolve the target endpoint from the model family
+        endpoint_name = ENDPOINT_BY_FAMILY.get(family)
+        if not endpoint_name:
+            return {
+                "statusCode": 400,
+                "headers": {"Content-Type": "application/json", **CORS_HEADERS},
+                "body": json.dumps({"error": f"Unknown model/family: {model}/{family}"}),
+            }
+
         # Get user ID from Cognito claims
         authorizer = event.get("requestContext", {}).get("authorizer", {})
         claims = authorizer.get("claims", {})
         user_id = claims.get("sub", "anonymous")
 
-        # Determine input key and job_id based on upload method
+        # Determine document_id + input key based on upload method
         if s3_key:
-            # Validate s3_key belongs to this user's job folder
+            # Validate s3_key belongs to this user's folder
             if not s3_key.startswith(f"{user_id}/"):
                 return {
                     "statusCode": 403,
                     "headers": {"Content-Type": "application/json", **CORS_HEADERS},
                     "body": json.dumps({"error": "Invalid s3_key"}),
                 }
-            # Use job_id from presigned URL response
-            job_id = presigned_job_id or str(uuid.uuid4())
+            # Pre-uploaded (presigned) input shared across this document's runs
+            document_id = presigned_document_id or str(uuid.uuid4())
             input_key = s3_key
-            print(f"Using pre-uploaded file: s3://{BUCKET_NAME}/{input_key}")
+            logger.info("Using pre-uploaded file for document %s", document_id)
         else:
-            # File sent as base64 - decode and upload
-            job_id = str(uuid.uuid4())
-            input_key = f"{user_id}/{job_id}/input/{filename}"
-            image_buffer = base64.b64decode(image_base64)
+            # File sent as base64 - decode and upload as the document input
+            document_id = presigned_document_id or str(uuid.uuid4())
+            input_key = f"{user_id}/{document_id}/input/{filename}"
+
+            try:
+                image_buffer = base64.b64decode(image_base64, validate=True)
+            except (binascii.Error, ValueError):
+                return {
+                    "statusCode": 400,
+                    "headers": {"Content-Type": "application/json", **CORS_HEADERS},
+                    "body": json.dumps({"error": "Invalid base64 image data"}),
+                }
+
+            # Reject oversized payloads before touching S3 (base64 inline path).
+            if len(image_buffer) > MAX_FILE_SIZE:
+                return {
+                    "statusCode": 413,
+                    "headers": {"Content-Type": "application/json", **CORS_HEADERS},
+                    "body": json.dumps({
+                        "error": f"File exceeds maximum size of {MAX_FILE_SIZE // (1024 * 1024)}MB",
+                    }),
+                }
 
             s3.put_object(
                 Bucket=BUCKET_NAME,
@@ -92,9 +144,16 @@ def handler(event, context):
                 Body=image_buffer,
                 ContentType=get_content_type(filename),
             )
-            print(f"Image uploaded to s3://{BUCKET_NAME}/{input_key}")
+            logger.info(
+                "Image uploaded for document %s (%d bytes)", document_id, len(image_buffer)
+            )
 
-        output_key = f"{user_id}/{job_id}/output/result.json"
+        # Per-run output + inference-input keys (one OCR result per model).
+        # Keeping inference-input.json under runs/{model}/ avoids two models
+        # racing on the same file when run concurrently on one document.
+        run_prefix = f"{user_id}/{document_id}/runs/{model}"
+        output_key = f"{run_prefix}/result.json"
+        inference_input_key = f"{run_prefix}/inference-input.json"
 
         # Prepare SageMaker input with model selection and metadata
         from datetime import datetime
@@ -104,7 +163,8 @@ def handler(event, context):
             "model": model,
             "model_options": options,
             "metadata": {
-                "job_id": job_id,
+                "document_id": document_id,
+                "model": model,
                 "filename": filename,
                 "s3_key": input_key,
                 "created_at": datetime.utcnow().isoformat() + "Z",
@@ -112,7 +172,6 @@ def handler(event, context):
         })
 
         # Upload inference input to S3
-        inference_input_key = f"{user_id}/{job_id}/input/inference-input.json"
         s3.put_object(
             Bucket=BUCKET_NAME,
             Key=inference_input_key,
@@ -120,31 +179,46 @@ def handler(event, context):
             ContentType="application/json",
         )
 
-        # Invoke SageMaker endpoint asynchronously
+        # Invoke the family's SageMaker endpoint asynchronously
         invoke_response = sagemaker.invoke_endpoint_async(
-            EndpointName=ENDPOINT_NAME,
+            EndpointName=endpoint_name,
             InputLocation=f"s3://{BUCKET_NAME}/{inference_input_key}",
             ContentType="application/json",
         )
 
-        print(f"SageMaker invocation response: {invoke_response}")
+        inference_id = invoke_response.get("InferenceId")
+        logger.info("SageMaker async invocation accepted (inference_id=%s)", inference_id)
 
-        # Record job in DuckDB metadata
-        db_utils.add_job(user_id, job_id, filename, input_key, model, options)
+        # Record/replace this run in document metadata (creates the document
+        # row if this is its first run).
+        db_utils.upsert_run(
+            user_id, document_id, filename, input_key, model, family, options
+        )
 
         return {
             "statusCode": 200,
             "headers": {"Content-Type": "application/json", **CORS_HEADERS},
             "body": json.dumps({
-                "job_id": job_id,
+                "document_id": document_id,
+                "model": model,
                 "status": "processing",
                 "output_key": output_key,
-                "inference_id": invoke_response.get("InferenceId"),
+                "inference_id": inference_id,
             }),
         }
 
+    except ClientError as e:
+        # AWS-side failure (S3 put / SageMaker invoke). Log details server-side,
+        # return a generic message to the client.
+        logger.exception("AWS error processing OCR request: %s", e)
+        return {
+            "statusCode": 502,
+            "headers": {"Content-Type": "application/json", **CORS_HEADERS},
+            "body": json.dumps({"error": "Upstream AWS service error"}),
+        }
+
     except Exception as e:
-        print(f"Error processing OCR request: {str(e)}")
+        logger.exception("Error processing OCR request: %s", e)
 
         return {
             "statusCode": 500,

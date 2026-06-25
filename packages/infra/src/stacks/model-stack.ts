@@ -18,28 +18,42 @@ export interface ModelStackProps extends StackProps {
   bucket: Bucket;
 }
 
+// Each entry packages one inference.py into its own model.tar.gz.
+// Add a new entry here to ship another model family's inference code.
+interface ModelArtifact {
+  /** Construct id suffix (must be unique within the stack) */
+  id: string;
+  /** Path to inference.py, relative to this file */
+  codePath: string;
+  /** S3 key for the resulting model.tar.gz */
+  outputKey: string;
+}
+
+const MODEL_ARTIFACTS: ModelArtifact[] = [
+  {
+    id: 'Paddle',
+    codePath: '../../model/code/inference.py',
+    outputKey: 'model/model.tar.gz',
+  },
+  {
+    id: 'Unlimited',
+    codePath: '../../model/unlimited/inference.py',
+    outputKey: 'model/unlimited-model.tar.gz',
+  },
+];
+
 export class ModelStack extends Stack {
+  /** s3:// URL for the PaddleOCR model.tar.gz */
   public readonly modelDataUrl: string;
+  /** s3:// URL for the Unlimited-OCR model.tar.gz */
+  public readonly unlimitedModelDataUrl: string;
 
   constructor(scope: Construct, id: string, props: ModelStackProps) {
     super(scope, id, props);
 
     const bucket = props.bucket;
 
-    // Read inference.py content
-    const inferenceCodePath = path.join(
-      __dirname,
-      '../../model/code/inference.py',
-    );
-    const inferenceCode = fs.readFileSync(inferenceCodePath, 'utf-8');
-
-    // Calculate hash of inference.py for change detection
-    const codeHash = crypto
-      .createHash('md5')
-      .update(inferenceCode)
-      .digest('hex');
-
-    // Lambda to create tar.gz and upload to S3
+    // Lambda to create tar.gz and upload to S3 (shared across artifacts)
     const modelUploaderLambda = new Function(this, 'ModelUploaderLambda', {
       runtime: Runtime.PYTHON_3_14,
       handler: 'index.handler',
@@ -50,23 +64,37 @@ export class ModelStack extends Stack {
     // Grant S3 write permission
     bucket.grantWrite(modelUploaderLambda);
 
-    // Custom Resource Provider
+    // Custom Resource Provider (shared)
     const modelUploaderProvider = new Provider(this, 'ModelUploaderProvider', {
       onEventHandler: modelUploaderLambda,
     });
 
-    // Custom Resource to upload model.tar.gz
-    new CustomResource(this, 'ModelUploader', {
-      serviceToken: modelUploaderProvider.serviceToken,
-      properties: {
-        BucketName: bucket.bucketName,
-        InferenceCode: inferenceCode,
-        OutputKey: 'model/model.tar.gz',
-        // Hash triggers update when inference.py changes
-        CodeHash: codeHash,
-      },
-    });
+    const urls: Record<string, string> = {};
+    for (const artifact of MODEL_ARTIFACTS) {
+      const inferenceCode = fs.readFileSync(
+        path.join(__dirname, artifact.codePath),
+        'utf-8',
+      );
+      // Hash triggers update when inference.py changes
+      const codeHash = crypto
+        .createHash('md5')
+        .update(inferenceCode)
+        .digest('hex');
 
-    this.modelDataUrl = `s3://${bucket.bucketName}/model/model.tar.gz`;
+      new CustomResource(this, `ModelUploader${artifact.id}`, {
+        serviceToken: modelUploaderProvider.serviceToken,
+        properties: {
+          BucketName: bucket.bucketName,
+          InferenceCode: inferenceCode,
+          OutputKey: artifact.outputKey,
+          CodeHash: codeHash,
+        },
+      });
+
+      urls[artifact.id] = `s3://${bucket.bucketName}/${artifact.outputKey}`;
+    }
+
+    this.modelDataUrl = urls['Paddle'];
+    this.unlimitedModelDataUrl = urls['Unlimited'];
   }
 }

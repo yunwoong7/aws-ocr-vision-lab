@@ -8,7 +8,13 @@ import {
   GatewayResponse,
   ResponseType,
 } from 'aws-cdk-lib/aws-apigateway';
-import { Function, Runtime, Architecture, Code, LayerVersion } from 'aws-cdk-lib/aws-lambda';
+import {
+  Function,
+  Runtime,
+  Architecture,
+  Code,
+  LayerVersion,
+} from 'aws-cdk-lib/aws-lambda';
 import * as path from 'path';
 import { UserPool } from 'aws-cdk-lib/aws-cognito';
 import { Bucket } from 'aws-cdk-lib/aws-s3';
@@ -19,7 +25,10 @@ import { RuntimeConfig } from './runtime-config.js';
 export interface OcrApiProps {
   userPool: UserPool;
   bucket: Bucket;
-  endpointName: string;
+  /** PaddleOCR family SageMaker endpoint name */
+  paddleEndpointName: string;
+  /** Unlimited-OCR family SageMaker endpoint name */
+  unlimitedEndpointName: string;
   lambdaCodePath: string;
 }
 
@@ -44,16 +53,19 @@ export class OcrApi extends Construct {
 
     // DuckDB Lambda Layer for job metadata management
     const duckdbLayer = new LayerVersion(this, 'DuckDBLayer', {
-      code: Code.fromAsset(path.join(props.lambdaCodePath, '..', 'layers', 'duckdb'), {
-        bundling: {
-          image: Runtime.PYTHON_3_14.bundlingImage,
-          command: [
-            'bash',
-            '-c',
-            'pip install duckdb -t /asset-output/python',
-          ],
+      code: Code.fromAsset(
+        path.join(props.lambdaCodePath, '..', 'layers', 'duckdb'),
+        {
+          bundling: {
+            image: Runtime.PYTHON_3_14.bundlingImage,
+            command: [
+              'bash',
+              '-c',
+              'pip install duckdb -t /asset-output/python',
+            ],
+          },
         },
-      }),
+      ),
       compatibleRuntimes: [Runtime.PYTHON_3_14],
       compatibleArchitectures: [Architecture.ARM_64],
       description: 'DuckDB for job metadata management',
@@ -84,7 +96,8 @@ export class OcrApi extends Construct {
       layers: [duckdbLayer],
       environment: {
         BUCKET_NAME: props.bucket.bucketName,
-        ENDPOINT_NAME: props.endpointName,
+        PADDLE_ENDPOINT_NAME: props.paddleEndpointName,
+        UNLIMITED_ENDPOINT_NAME: props.unlimitedEndpointName,
         REGION: region,
       },
     });
@@ -141,12 +154,14 @@ export class OcrApi extends Construct {
     props.bucket.grantReadWrite(this.imageManagerLambda); // Read for presigned URLs, Delete for cleanup
     props.bucket.grantReadWrite(this.jobListLambda); // Read/write parquet for job listing
 
-    // Grant SageMaker permissions
+    // Grant SageMaker permissions for both endpoints (Lambda routes by family)
+    const account = Stack.of(this).account;
     this.requestLambda.addToRolePolicy(
       new PolicyStatement({
         actions: ['sagemaker:InvokeEndpointAsync'],
         resources: [
-          `arn:aws:sagemaker:${region}:${Stack.of(this).account}:endpoint/${props.endpointName}`,
+          `arn:aws:sagemaker:${region}:${account}:endpoint/${props.paddleEndpointName}`,
+          `arn:aws:sagemaker:${region}:${account}:endpoint/${props.unlimitedEndpointName}`,
         ],
       }),
     );
@@ -154,7 +169,7 @@ export class OcrApi extends Construct {
     // API Gateway
     this.api = new RestApi(this, 'Api', {
       restApiName: 'OCR API',
-      description: 'PaddleOCR-VL Service API',
+      description: 'AWS OCR Lab Service API',
       defaultCorsPreflightOptions: {
         allowOrigins: Cors.ALL_ORIGINS,
         allowMethods: Cors.ALL_METHODS,
@@ -189,19 +204,33 @@ export class OcrApi extends Construct {
       authorizationType: AuthorizationType.COGNITO,
     });
 
-    // GET /ocr/{jobId}
-    const jobResource = ocrResource.addResource('{jobId}');
-    jobResource.addMethod('GET', new LambdaIntegration(this.statusLambda), {
-      authorizer,
-      authorizationType: AuthorizationType.COGNITO,
-    });
+    // GET /ocr/{jobId}/{model} - status of one model run on a document.
+    // The path variable is named {jobId} (not {documentId}) to reuse the
+    // existing variable slot — API Gateway allows only one variable path part
+    // per parent, so renaming it would collide during the update. The value is
+    // the document id; the status Lambda reads it under `jobId`.
+    const documentRunResource = ocrResource
+      .addResource('{jobId}')
+      .addResource('{model}');
+    documentRunResource.addMethod(
+      'GET',
+      new LambdaIntegration(this.statusLambda),
+      {
+        authorizer,
+        authorizationType: AuthorizationType.COGNITO,
+      },
+    );
 
-    // GET /jobs - List all jobs for the user
-    const jobsResource = this.api.root.addResource('jobs');
-    jobsResource.addMethod('GET', new LambdaIntegration(this.jobListLambda), {
-      authorizer,
-      authorizationType: AuthorizationType.COGNITO,
-    });
+    // GET /documents - List all documents (with their runs) for the user
+    const documentsResource = this.api.root.addResource('documents');
+    documentsResource.addMethod(
+      'GET',
+      new LambdaIntegration(this.jobListLambda),
+      {
+        authorizer,
+        authorizationType: AuthorizationType.COGNITO,
+      },
+    );
 
     // /image/{proxy+} - Image management (GET presigned URL, DELETE)
     const imageResource = this.api.root.addResource('image');

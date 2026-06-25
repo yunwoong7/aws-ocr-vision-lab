@@ -1,4 +1,13 @@
-#!/bin/bash
+#!/usr/bin/env bash
+#
+# OCR Vision Lab - deployment entry point (run from AWS CloudShell).
+# Spins up a CodeBuild project (via CloudFormation) that builds + deploys
+# all AwsOcrLab-* CDK stacks, streams the build, then reports the app URL.
+#
+set -euo pipefail
+
+SCRIPT_DIR="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)"
+cd "$SCRIPT_DIR"
 
 echo ""
 echo "==========================================================================="
@@ -23,6 +32,10 @@ echo ""
 REPO_URL="https://github.com/yunwoong7/aws-ocr-vision-lab.git"
 VERSION="main"
 INSTANCE_TYPE="ml.g5.xlarge"
+ADMIN_USER_EMAIL=""
+RUN_PREFLIGHT=""      # "yes" set by --preflight (preflight-only mode)
+SKIP_PREFLIGHT=""     # "yes" set by --skip-preflight (bypass the auto check)
+REGION="${AWS_REGION:-${AWS_DEFAULT_REGION:-ap-northeast-2}}"
 
 # Function to prompt for email with validation
 prompt_for_email() {
@@ -58,6 +71,9 @@ while [[ "$#" -gt 0 ]]; do
         --instance-type) INSTANCE_TYPE="$2"; shift ;;
         --repo-url) REPO_URL="$2"; shift ;;
         --version) VERSION="$2"; shift ;;
+        --region) REGION="$2"; shift ;;
+        --preflight) RUN_PREFLIGHT="yes" ;;
+        --skip-preflight) SKIP_PREFLIGHT="yes" ;;
         --help)
             echo "Usage: $0 [OPTIONS]"
             echo ""
@@ -66,6 +82,9 @@ while [[ "$#" -gt 0 ]]; do
             echo "  --instance-type TYPE        SageMaker instance type"
             echo "  --repo-url URL              Repository URL"
             echo "  --version VERSION           Branch or tag to deploy"
+            echo "  --region REGION             AWS region (default: ap-northeast-2)"
+            echo "  --preflight                 Only run the IAM permission check, then exit"
+            echo "  --skip-preflight            Skip the automatic pre-deploy permission check"
             echo "  --help                      Show this help message"
             exit 0
             ;;
@@ -73,6 +92,18 @@ while [[ "$#" -gt 0 ]]; do
     esac
     shift
 done
+
+export AWS_DEFAULT_REGION="$REGION"
+
+# Preflight-only mode: run the read-only IAM permission check and exit.
+if [[ "$RUN_PREFLIGHT" == "yes" ]]; then
+    if [[ ! -f "$SCRIPT_DIR/preflight.sh" ]]; then
+        echo "preflight.sh not found next to deploy.sh." >&2; exit 1
+    fi
+    echo ""
+    bash "$SCRIPT_DIR/preflight.sh" "$REGION"
+    exit $?
+fi
 
 # Interactive prompts if not provided via arguments
 if [[ -z "$ADMIN_USER_EMAIL" ]]; then
@@ -121,10 +152,20 @@ while true; do
     esac
 done
 
+# Pre-deploy permission check (read-only). Non-fatal: a denial only warns,
+# since SimulatePrincipalPolicy can itself be blocked by SCPs. Skip with
+# --skip-preflight.
+if [[ "$SKIP_PREFLIGHT" != "yes" ]] && [[ -f "$SCRIPT_DIR/preflight.sh" ]]; then
+    echo ""
+    echo "Running pre-deploy permission check..."
+    bash "$SCRIPT_DIR/preflight.sh" "$REGION" || \
+        echo "  (continuing despite preflight warnings — pass --skip-preflight to silence)"
+    echo ""
+fi
+
 # Validate CloudFormation template
 echo "Validating CloudFormation template..."
-aws cloudformation validate-template --template-body file://deploy-codebuild.yml > /dev/null 2>&1
-if [[ $? -ne 0 ]]; then
+if ! aws cloudformation validate-template --template-body file://deploy-codebuild.yml > /dev/null 2>&1; then
     echo "Template validation failed. Please ensure deploy-codebuild.yml exists and is valid."
     exit 1
 fi
@@ -133,17 +174,15 @@ StackName="ocr-vision-lab-codebuild-deploy"
 
 # Deploy CloudFormation stack
 echo "Deploying CloudFormation stack for CodeBuild..."
-aws cloudformation deploy \
-  --stack-name $StackName \
+if ! aws cloudformation deploy \
+  --stack-name "$StackName" \
   --template-file deploy-codebuild.yml \
   --capabilities CAPABILITY_IAM \
   --parameter-overrides \
     AdminUserEmail="$ADMIN_USER_EMAIL" \
     InstanceType="$INSTANCE_TYPE" \
     RepoUrl="$REPO_URL" \
-    Version="$VERSION"
-
-if [[ $? -ne 0 ]]; then
+    Version="$VERSION"; then
     echo "CloudFormation deployment failed"
     exit 1
 fi
@@ -152,7 +191,7 @@ echo "Waiting for stack creation to complete..."
 spin='-\|/'
 i=0
 while true; do
-    status=$(aws cloudformation describe-stacks --stack-name $StackName --query 'Stacks[0].StackStatus' --output text 2>/dev/null)
+    status=$(aws cloudformation describe-stacks --stack-name "$StackName" --query 'Stacks[0].StackStatus' --output text 2>/dev/null || echo "PENDING")
     if [[ "$status" == "CREATE_COMPLETE" || "$status" == "UPDATE_COMPLETE" ]]; then
         break
     elif [[ "$status" == "ROLLBACK_COMPLETE" || "$status" == "DELETE_FAILED" || "$status" == "CREATE_FAILED" || "$status" == "UPDATE_ROLLBACK_COMPLETE" ]]; then
@@ -176,7 +215,7 @@ fi
 
 # Start CodeBuild
 echo "Starting CodeBuild project: $projectName..."
-buildId=$(aws codebuild start-build --project-name $projectName --query 'build.id' --output text)
+buildId=$(aws codebuild start-build --project-name "$projectName" --query 'build.id' --output text || echo "")
 
 if [[ -z "$buildId" ]]; then
     echo "Failed to start CodeBuild project"
@@ -189,8 +228,8 @@ echo "You can monitor the build in the AWS Console: CodeBuild > Build projects >
 echo ""
 
 while true; do
-    buildStatus=$(aws codebuild batch-get-builds --ids $buildId --query 'builds[0].buildStatus' --output text)
-    phases=$(aws codebuild batch-get-builds --ids $buildId --query 'builds[0].phases[?phaseStatus==`IN_PROGRESS`].phaseType' --output text)
+    buildStatus=$(aws codebuild batch-get-builds --ids "$buildId" --query 'builds[0].buildStatus' --output text 2>/dev/null || echo "IN_PROGRESS")
+    phases=$(aws codebuild batch-get-builds --ids "$buildId" --query 'builds[0].phases[?phaseStatus==`IN_PROGRESS`].phaseType' --output text 2>/dev/null || echo "")
 
     if [[ ! -z "$phases" ]]; then
         echo -ne "\rCurrent phase: $phases    "
@@ -208,18 +247,17 @@ echo "Build completed with status: $buildStatus"
 if [[ "$buildStatus" != "SUCCEEDED" ]]; then
     echo "Build failed. Fetching logs..."
 
-    buildDetail=$(aws codebuild batch-get-builds --ids $buildId --query 'builds[0].logs.{groupName: groupName, streamName: streamName}' --output json)
-    logGroupName=$(echo $buildDetail | jq -r '.groupName')
-    logStreamName=$(echo $buildDetail | jq -r '.streamName')
+    buildDetail=$(aws codebuild batch-get-builds --ids "$buildId" --query 'builds[0].logs.{groupName: groupName, streamName: streamName}' --output json 2>/dev/null || echo '{}')
+    logGroupName=$(echo "$buildDetail" | jq -r '.groupName // empty')
 
-    if [[ ! -z "$logGroupName" ]] && [[ "$logGroupName" != "null" ]]; then
+    if [[ -n "$logGroupName" ]] && [[ "$logGroupName" != "null" ]]; then
         echo "Fetching recent error logs..."
-        aws logs tail $logGroupName --since 5m --filter-pattern "ERROR" 2>/dev/null || true
+        aws logs tail "$logGroupName" --since 5m --filter-pattern "ERROR" 2>/dev/null || true
+        echo ""
+        echo "For full logs, run:"
+        echo "aws logs tail $logGroupName --follow"
     fi
 
-    echo ""
-    echo "For full logs, run:"
-    echo "aws logs tail $logGroupName --follow"
     exit 1
 fi
 
@@ -229,12 +267,8 @@ echo "==========================================================================
 echo "  Deployment Successful!                                                   "
 echo "---------------------------------------------------------------------------"
 
-buildDetail=$(aws codebuild batch-get-builds --ids $buildId --query 'builds[0].logs.{groupName: groupName, streamName: streamName}' --output json)
-logGroupName=$(echo $buildDetail | jq -r '.groupName')
-logStreamName=$(echo $buildDetail | jq -r '.streamName')
-
-# Get values directly from CloudFormation
-frontendDomain=$(aws cloudformation describe-stacks --stack-name PaddleOCR-Application --query 'Stacks[0].Outputs[?contains(OutputKey,`DistributionDomainName`)].OutputValue' --output text 2>/dev/null)
+# Get values directly from CloudFormation (Frontend stack holds the CloudFront domain)
+frontendDomain=$(aws cloudformation describe-stacks --stack-name AwsOcrLab-Frontend --query 'Stacks[0].Outputs[?contains(OutputKey,`DistributionDomainName`)].OutputValue' --output text 2>/dev/null || echo "")
 frontendUrl="https://${frontendDomain}"
 
 # Password is TempPass123! for new users

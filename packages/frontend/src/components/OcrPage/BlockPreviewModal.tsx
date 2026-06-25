@@ -22,14 +22,8 @@ export const BlockPreviewModal: React.FC<BlockPreviewModalProps> = ({
   const cropHeight = y2 - y1;
 
   return (
-    <div
-      className="block-preview-overlay"
-      onClick={onClose}
-    >
-      <div
-        className="block-preview-modal"
-        onClick={(e) => e.stopPropagation()}
-      >
+    <div className="block-preview-overlay" onClick={onClose}>
+      <div className="block-preview-modal" onClick={(e) => e.stopPropagation()}>
         <div className="block-preview-header">
           <span className={`block-label ${selectedBlock.block_label}`}>
             {selectedBlock.block_label}
@@ -37,10 +31,7 @@ export const BlockPreviewModal: React.FC<BlockPreviewModalProps> = ({
           <span className="block-preview-info">
             Block #{selectedBlock.block_id} | {cropWidth}×{cropHeight}px
           </span>
-          <button
-            className="block-preview-close"
-            onClick={onClose}
-          >
+          <button className="block-preview-close" onClick={onClose}>
             ×
           </button>
         </div>

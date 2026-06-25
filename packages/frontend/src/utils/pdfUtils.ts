@@ -46,7 +46,7 @@ export async function loadPdfJs(): Promise<any> {
 // Helper function to render PDF page to image
 export async function renderPdfToImage(
   arrayBuffer: ArrayBuffer,
-  pageNumber: number = 1,
+  pageNumber = 1,
 ): Promise<{ dataUrl: string | null; totalPages: number }> {
   try {
     // Load PDF.js from CDN

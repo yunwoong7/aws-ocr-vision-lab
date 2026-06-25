@@ -92,7 +92,8 @@ OCR Vision Lab is a web-based playground for testing and experimenting with [Pad
 ### Prerequisites
 
 - [mise](https://mise.jdx.dev/) (recommended) or manually install:
-  - Node.js v22+, pnpm v10+, Python 3.12+, AWS CDK
+  - Node.js v22+, pnpm v10+, Python 3.12 (local tooling), AWS CDK
+  - Note: Lambda functions run on the Python 3.14 runtime; the local 3.12 is only for the CDK/build toolchain.
 - [AWS CLI](https://aws.amazon.com/cli/) configured with appropriate credentials
 
 ### Installation
@@ -146,12 +147,12 @@ chmod +x deploy.sh cleanup.sh
 
 | Stack | Description |
 |-------|-------------|
-| **PaddleOCR-Infra** | S3 bucket, ECR repository, CodeBuild project |
-| **PaddleOCR-Model** | Model artifacts (inference.py) uploaded to S3 |
-| **PaddleOCR-Identity** | Cognito User Pool and Identity Pool |
-| **PaddleOCR-Endpoint** | SageMaker inference endpoint |
-| **PaddleOCR-Api** | API Gateway + Lambda functions |
-| **PaddleOCR-Frontend** | CloudFront + S3 static website |
+| **AwsOcrLab-Infra** | S3 bucket, ECR repository, CodeBuild project |
+| **AwsOcrLab-Model** | Model artifacts (inference.py) uploaded to S3 |
+| **AwsOcrLab-Identity** | Cognito User Pool and Identity Pool |
+| **AwsOcrLab-Endpoint** | SageMaker async inference endpoint (auto-scales 1→3 on request backlog) |
+| **AwsOcrLab-Api** | API Gateway + Lambda functions |
+| **AwsOcrLab-Frontend** | CloudFront + S3 static website |
 
 ### Manual Deployment (Local)
 

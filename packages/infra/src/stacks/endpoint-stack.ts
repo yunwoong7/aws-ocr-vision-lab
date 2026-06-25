@@ -8,6 +8,8 @@ export interface EndpointStackProps extends StackProps {
   imageUri: string;
   modelDataUrl: string;
   instanceType?: string;
+  /** Container env vars. Omit for PaddleOCR defaults. */
+  environment?: { [key: string]: string };
 }
 
 export class EndpointStack extends Stack {
@@ -21,6 +23,7 @@ export class EndpointStack extends Stack {
       imageUri: props.imageUri,
       modelDataUrl: props.modelDataUrl,
       instanceType: props.instanceType || 'ml.g5.xlarge',
+      environment: props.environment,
     });
 
     this.endpointName = ocrEndpoint.endpointName;
