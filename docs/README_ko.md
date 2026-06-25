@@ -5,12 +5,15 @@
 <h1 align="center">OCR Vision Lab</h1>
 
 <p align="center">
-  <strong>AWS 인프라에서 PaddleOCR 모델을 테스트하기 위한 서버리스 OCR 플레이그라운드</strong>
+  <strong>AWS 인프라에서 여러 OCR / 비전-언어 모델을 테스트하고 비교하기 위한 서버리스 OCR 플레이그라운드</strong>
 </p>
 
 <p align="center">
   <img src="https://img.shields.io/badge/License-MIT-green.svg" alt="MIT License">
   <img src="https://img.shields.io/badge/PaddleOCR-3.2.2-blue?logo=paddlepaddle" alt="PaddleOCR">
+  <img src="https://img.shields.io/badge/Unlimited--OCR-3B-orange" alt="Unlimited-OCR">
+  <img src="https://img.shields.io/badge/GLM--OCR-0.9B-9cf" alt="GLM-OCR">
+  <img src="https://img.shields.io/badge/Qwen3--VL-4B%2F8B-purple" alt="Qwen3-VL">
   <img src="https://img.shields.io/badge/Python-3.14-3776AB?logo=python&logoColor=white" alt="Python">
   <img src="https://img.shields.io/badge/AWS-SageMaker-FF9900?logo=amazonaws&logoColor=white" alt="SageMaker">
   <img src="https://img.shields.io/badge/React-19-61DAFB?logo=react&logoColor=black" alt="React">
@@ -39,27 +42,31 @@
 
 ## 개요
 
-OCR Vision Lab은 AWS 인프라에서 [PaddleOCR](https://github.com/PaddlePaddle/PaddleOCR) 모델을 테스트하고 실험할 수 있는 웹 기반 플레이그라운드입니다. 문서를 업로드하고, OCR 모델을 선택하고, 바운딩 박스 오버레이로 추출 결과를 시각화할 수 있는 직관적인 인터페이스를 제공합니다.
+OCR Vision Lab은 AWS 인프라에서 **여러 OCR / 비전-언어 모델을 테스트하고 비교**할 수 있는 웹 기반 플레이그라운드입니다. 문서를 업로드해 여러 모델로 실행하고, 바운딩 박스 오버레이와 함께 결과를 나란히 비교할 수 있습니다. 현재 네 가지 모델 패밀리를 제공합니다: [PaddleOCR](https://github.com/PaddlePaddle/PaddleOCR), [Unlimited-OCR](https://huggingface.co/baidu/Unlimited-OCR), [GLM-OCR](https://huggingface.co/zai-org/GLM-OCR), [Qwen3-VL](https://github.com/QwenLM/Qwen3-VL).
 
-> **참고**: 이것은 프로덕션 솔루션이 아닙니다 — AWS 인프라에서 PaddleOCR 모델을 테스트하기 위한 플레이그라운드입니다. 실험, 평가 및 개발 목적으로 설계되었습니다.
+> **참고**: 이것은 프로덕션 솔루션이 아닙니다 — AWS 인프라에서 OCR 모델을 테스트하고 비교하기 위한 플레이그라운드입니다. 실험, 평가 및 개발 목적으로 설계되었습니다.
 
 ![Screenshot](assets/screenshot.png)
 
 ## 기능
 
-- **다중 OCR 모델**
-  - **PP-OCRv5**: 높은 정확도의 범용 텍스트 추출 OCR
-  - **PP-StructureV3**: 테이블 및 레이아웃 감지를 포함한 문서 구조 분석
-  - **PaddleOCR-VL**: 복잡한 문서 이해를 위한 비전-언어 모델
+- **다중 모델 패밀리** (각자 별도의 SageMaker 엔드포인트)
+  - **PaddleOCR** — `PP-OCRv5` (범용 텍스트), `PP-StructureV3` (테이블/레이아웃), `PaddleOCR-VL` (비전-언어)
+  - **Unlimited-OCR** — Baidu 3B VLM, `gundam` (고정밀) / `base` (멀티페이지 PDF)
+  - **GLM-OCR** — Zhipu 0.9B, 가볍고 빠름
+  - **Qwen3-VL** — Alibaba `4B` / `8B`, 강력한 다국어 정확도
+  - 같은 문서를 여러 모델로 실행하고 run 탭에서 결과를 비교
 
 - **다국어 지원**: 한국어, 영어, 중국어, 일본어 등 80개 이상의 언어 지원
 
-- **지원 파일 형식**: PNG, JPEG, TIFF, PDF (최대 100MB)
+- **지원 파일 형식**: PNG, JPEG, TIFF, PDF (멀티페이지, 최대 100MB)
 
 - **인터랙티브 결과 뷰어**
   - 상세 검사를 위한 확대/축소 및 이동 컨트롤
-  - 바운딩 박스 오버레이 시각화
+  - 바운딩 박스 오버레이 시각화 (PaddleOCR / Unlimited-OCR)
   - 다양한 출력 형식 (Markdown, HTML, JSON, Blocks)
+
+- **GPU 비용 제어**: 모델별 전원 토글 — 엔드포인트는 기본적으로 꺼져 있고(오토스케일링 min 0) 유휴 시 0으로 스케일됩니다. 필요할 때만 사이드바에서 해당 모델을 켜세요
 
 - **서버리스 아키텍처**: 자동 스케일링이 가능한 완전 관리형 AWS 인프라
 
@@ -72,30 +79,29 @@ OCR Vision Lab은 AWS 인프라에서 [PaddleOCR](https://github.com/PaddlePaddl
 |-----------|------------|------|
 | 프론트엔드 | CloudFront + S3 | React 기반 웹 애플리케이션 |
 | 인증 | Cognito | 사용자 인증 및 권한 부여 |
-| API | API Gateway + Lambda | RESTful API 엔드포인트 |
-| OCR 엔진 | SageMaker Endpoint | PaddleOCR 모델 추론 |
+| API | API Gateway + Lambda | RESTful API 엔드포인트 + 엔드포인트 전원 토글 |
+| OCR 엔진 | SageMaker 비동기 엔드포인트 | 모델 패밀리별 엔드포인트 1개 (PaddleOCR / Unlimited-OCR / GLM-OCR / Qwen3-VL 4B / Qwen3-VL 8B) |
 | 스토리지 | S3 | 문서 저장 및 OCR 결과 |
-| 컨테이너 | ECR + CodeBuild | SageMaker용 Docker 이미지 |
+| 컨테이너 | ECR + CodeBuild | 모델별 SageMaker용 Docker 이미지 |
 
 ### 워크플로우
 
 1. 사용자가 Amazon Cognito를 통해 인증
 2. React 프론트엔드를 통해 문서 업로드
-3. API Gateway가 Lambda 함수 트리거
-4. Lambda가 문서를 S3에 업로드하고 SageMaker 엔드포인트 호출
-5. SageMaker가 문서에 대해 PaddleOCR 추론 실행
-6. 결과가 S3에 저장되고 프론트엔드로 반환
-7. 프론트엔드가 시각적 오버레이와 함께 추출된 텍스트 표시
+3. 필요한 경우 선택한 모델의 엔드포인트를 켭니다 (확인 프롬프트, 오토스케일링 min 0 → 1)
+4. API Gateway가 Lambda를 트리거하고, Lambda가 모델 패밀리에 맞는 엔드포인트로 라우팅
+5. Lambda가 문서를 S3에 업로드하고 SageMaker 비동기 엔드포인트 호출
+6. SageMaker가 추론 실행 (PDF는 페이지별 이미지로 분할)
+7. 결과가 S3에 저장되고 프론트엔드가 폴링하여 시각적 오버레이와 함께 표시
 
 ## 시작하기
 
 ### 사전 요구 사항
 
-- [Node.js](https://nodejs.org/) v22 이상
-- [pnpm](https://pnpm.io/) v10 이상
-- Python 3.12 (로컬 빌드 도구용 — Lambda는 Python 3.14 런타임에서 실행)
-- [AWS CLI](https://aws.amazon.com/cli/) (자격 증명 설정 필요)
-- [AWS CDK](https://aws.amazon.com/cdk/) v2
+- [mise](https://mise.jdx.dev/) (권장) 또는 수동 설치:
+  - Node.js v22+, pnpm v10+, Python 3.12 (로컬 도구용), AWS CDK
+  - 참고: Lambda 함수는 Python 3.14 런타임에서 실행되며, 로컬 3.12는 CDK/빌드 도구 체인용입니다.
+- [AWS CLI](https://aws.amazon.com/cli/) (적절한 자격 증명으로 설정)
 
 ### 설치
 
@@ -103,6 +109,9 @@ OCR Vision Lab은 AWS 인프라에서 [PaddleOCR](https://github.com/PaddlePaddl
 # 저장소 복제
 git clone https://github.com/yunwoong7/aws-ocr-vision-lab.git
 cd aws-ocr-vision-lab
+
+# mise로 도구 설치 (Node, pnpm, Python, CDK 자동 설치)
+mise install
 
 # 의존성 설치
 pnpm install
@@ -112,7 +121,7 @@ pnpm install
 
 ```bash
 # 프론트엔드 개발 서버 시작
-pnpm nx run frontend:serve
+mise run dev
 ```
 
 ---
@@ -143,37 +152,47 @@ chmod +x deploy.sh cleanup.sh
 
 ### 스택 구조
 
-1. **AwsOcrLab-Infra**: S3 버킷, ECR 저장소, CodeBuild 프로젝트
-2. **AwsOcrLab-Model**: S3에 업로드되는 모델 아티팩트 (inference.py)
-3. **AwsOcrLab-Identity**: Cognito User Pool 및 Identity Pool
-4. **AwsOcrLab-Endpoint**: SageMaker 비동기 추론 엔드포인트 (요청 백로그 기반 1→3 오토스케일링)
-5. **AwsOcrLab-Api**: API Gateway + Lambda 함수
-6. **AwsOcrLab-Frontend**: CloudFront + S3 정적 웹사이트
+| 스택 | 설명 |
+|------|------|
+| **AwsOcrLab-Infra** | S3 버킷, 모델별 ECR 저장소, CodeBuild 프로젝트 |
+| **AwsOcrLab-Model** | S3에 model.tar.gz로 패키징되는 모델 아티팩트 (inference.py) |
+| **AwsOcrLab-Identity** | Cognito User Pool 및 Identity Pool |
+| **AwsOcrLab-Endpoint** | PaddleOCR SageMaker 비동기 엔드포인트 |
+| **AwsOcrLab-UnlimitedEndpoint** | Unlimited-OCR SageMaker 비동기 엔드포인트 |
+| **AwsOcrLab-GlmEndpoint** | GLM-OCR SageMaker 비동기 엔드포인트 |
+| **AwsOcrLab-Qwen4bEndpoint** / **-Qwen8bEndpoint** | Qwen3-VL 4B / 8B SageMaker 비동기 엔드포인트 |
+| **AwsOcrLab-Api** | API Gateway + Lambda 함수 |
+| **AwsOcrLab-Frontend** | CloudFront + S3 정적 웹사이트 |
+
+> 모든 엔드포인트는 기본적으로 **꺼져** 있습니다 (오토스케일링 min 0). 유휴 시 0으로 스케일되고 앱 사이드바에서 켜기 때문에, 모델을 사용하는 동안의 GPU 시간에 대해서만 비용이 발생합니다.
 
 ### 수동 배포 (로컬)
 
 로컬 머신에서 배포하려면:
 
 ```bash
-# AWS 자격 증명 설정
-aws configure
-
-# 의존성 설치
-pnpm install
-
-# CDK 부트스트랩 (최초 1회만)
-cd packages/infra
-npx cdk bootstrap
+# AWS 설정으로 .env.local 생성
+echo "AWS_REGION=ap-northeast-2" > .env.local
+echo "AWS_PROFILE=your-profile" >> .env.local
 
 # 모든 스택 배포
-npx cdk deploy --all
+mise run deploy
+
+# 또는 특정 스택만 배포
+mise run deploy:stack
 ```
 
 ### 비용 관리
 
-> **경고**: SageMaker 엔드포인트는 24/7 실행되며 ml.g5.xlarge 기준 **월 $1,000 이상**의 비용이 발생합니다.
+엔드포인트는 GPU 인스턴스입니다 (`ml.g5.xlarge` ≈ 각 **$1.7/시간**). 흔한
+"항상 켜져 있는" 청구를 피하기 위해, **모든 엔드포인트는 기본적으로 꺼져 있고**(오토스케일링 min 0)
+유휴 시 0으로 스케일됩니다:
 
-사용하지 않을 때 비용을 절감하려면:
+- 필요할 때만 앱 사이드바("Models (GPU)")에서 모델을 **켜세요** — 몇 분 안에 기동됩니다.
+- 꺼진 모델에 OCR을 제출하면 먼저 켤지 묻는 프롬프트가 표시됩니다.
+- 유휴 모델(min 0)은 자동으로 0으로 다시 스케일되며, 꺼져 있는 동안에는 비용이 발생하지 않습니다.
+
+리소스를 완전히 제거하려면:
 ```bash
 # SageMaker 엔드포인트만 삭제
 ./cleanup.sh --endpoint-only
@@ -184,77 +203,88 @@ npx cdk deploy --all
 
 ### 환경 변수
 
+`.env.local`에 설정합니다 (mise가 자동 로드):
+
 | 변수 | 설명 |
 |------|------|
-| `AWS_REGION` | AWS 리전 (기본값: ap-northeast-2) |
+| `AWS_REGION` | AWS 리전 |
 | `AWS_PROFILE` | AWS CLI 프로필 이름 |
 
 ## 지원 모델
 
-### PP-OCRv5
+| 패밀리 | 변형 | 크기 | 바운딩 박스 | 비고 |
+|--------|------|------|-------------|------|
+| **PaddleOCR** | PP-OCRv5 | — | ✅ | 범용 텍스트, 80개 이상 언어, 방향/왜곡 보정 옵션 |
+| | PP-StructureV3 | — | ✅ | 테이블 + 레이아웃 구조 분석 |
+| | PaddleOCR-VL | — | ✅ | 복잡한 레이아웃을 위한 비전-언어 |
+| **Unlimited-OCR** | gundam | 3B | ✅ | 고정밀 단일 이미지 (미세 텍스트용 크롭) |
+| | base | 3B | ✅ | 균형 잡힌 단일 이미지 + 멀티페이지 PDF |
+| **GLM-OCR** | glm-ocr | 0.9B | ❌ | 가볍고 빠름, 마크다운 텍스트만 |
+| **Qwen3-VL** | qwen3-vl-4b | 4B | ❌ | 빠른 VL OCR, 강력한 다국어 정확도 |
+| | qwen3-vl-8b | 8B | ❌ | 더 높은 품질의 VL OCR |
 
-높은 정확도로 텍스트 추출에 최적화된 범용 OCR.
+### PaddleOCR
 
-**옵션:**
-- 언어 선택 (80개 이상 언어)
-- 문서 방향 분류
-- 문서 왜곡 보정
-- 텍스트 라인 방향 감지
+- **PP-OCRv5** — 범용 텍스트 추출. 옵션: 언어 (80개 이상), 문서 방향 분류, 왜곡 보정, 텍스트 라인 방향.
+- **PP-StructureV3** — 문서 구조 분석. 제목, 테이블(마크다운), 공간 정보가 포함된 텍스트 블록을 출력합니다.
+- **PaddleOCR-VL** — 혼합 콘텐츠와 복잡한 레이아웃을 위한 비전-언어 모델.
 
-### PP-StructureV3
+### Unlimited-OCR (Baidu, 3B VLM)
 
-레이아웃 이해 기능이 있는 고급 문서 구조 분석.
+문서 파싱 비전-언어 모델. `gundam`은 미세 텍스트를 위해 이미지를 크롭하고,
+`base`는 단일 이미지와 멀티페이지 PDF를 처리합니다. 바운딩 박스는 모델의 레이아웃
+마크업에서 파싱되므로 Blocks/Document 뷰와 오버레이가 동작합니다.
 
-**옵션:**
-- 언어 선택
-- 문서 방향 분류
-- 문서 왜곡 보정
+### GLM-OCR (Zhipu, 0.9B)
 
-**출력 포함:**
-- 문서 제목 및 단락 제목
-- 테이블 (마크다운 형식)
-- 공간 정보가 포함된 텍스트 블록
+가벼운 멀티모달 OCR. 매우 빠르고 가볍지만 텍스트 전용이며(바운딩 박스 없음),
+결과는 Markdown 뷰에서 렌더링됩니다.
 
-### PaddleOCR-VL
+### Qwen3-VL (Alibaba, 4B / 8B)
 
-복잡한 문서 이해 작업을 위한 비전-언어 모델.
-
-**적합한 용도:**
-- 혼합 콘텐츠 문서
-- 복잡한 레이아웃
-- 맥락적 이해가 필요한 문서
+강력한 다국어(한국어 포함) 정확도를 가진 비전-언어 OCR. 현재는 텍스트 전용
+출력이며(바운딩 박스 없음), 4B는 더 빠르고 8B는 더 높은 품질을 제공합니다.
 
 ## 프로젝트 구조
 
 ```
 aws-ocr-vision-lab/
+├── .mise.toml               # 도구 버전 & 태스크 (mise)
+├── .env.local                # AWS 프로필 & 리전 (git-ignored)
 ├── packages/
-│   ├── frontend/          # React 웹 애플리케이션
-│   │   ├── src/
-│   │   │   ├── components/  # React 컴포넌트
-│   │   │   ├── routes/      # 페이지 라우트
-│   │   │   └── types/       # TypeScript 타입
-│   │   └── public/          # 정적 자산
-│   ├── infra/             # AWS CDK 인프라
-│   │   ├── src/
-│   │   │   └── stacks/      # CDK 스택 정의
-│   │   ├── lambda/          # Lambda 함수 코드
-│   │   └── model/           # SageMaker 모델 코드
-│   │       └── code/
-│   │           └── inference.py
-│   └── common/            # 공유 구성 요소
-│       └── constructs/
-├── docs/                  # 문서
+│   ├── frontend/             # React 웹 애플리케이션
+│   │   └── src/
+│   │       ├── components/
+│   │       │   ├── OcrPage/    # 결과 뷰어 컴포넌트
+│   │       │   ├── AppLayout/  # 앱 셸 & 사이드바
+│   │       │   └── DocumentEditor/
+│   │       ├── hooks/          # 커스텀 React 훅
+│   │       ├── utils/          # PDF & OCR 헬퍼 유틸리티
+│   │       ├── routes/         # 페이지 라우트
+│   │       └── types/          # TypeScript 타입
+│   ├── infra/                # AWS CDK 인프라
+│   │   ├── src/stacks/         # CDK 스택 정의
+│   │   ├── src/dockerfiles.ts  # 모델별 컨테이너 Dockerfile
+│   │   ├── lambda/             # Lambda 함수 (Python)
+│   │   ├── layers/             # Lambda 레이어 (DuckDB)
+│   │   └── model/              # 패밀리별 SageMaker 추론 코드
+│   │       ├── code/             # PaddleOCR
+│   │       ├── unlimited/        # Unlimited-OCR
+│   │       ├── glm/              # GLM-OCR
+│   │       └── qwen/             # Qwen3-VL (4B/8B 공유)
+│   └── common/constructs/   # 공유 CDK 구성 요소
+├── docs/                     # 문서
 └── README.md
 ```
 
 ## 기술 스택
 
 - **프론트엔드**: React 19, TypeScript, Vite
-- **백엔드**: Python (Lambda), PaddleOCR
+- **백엔드**: Python 3.14 (Lambda), DuckDB
+- **모델**: PaddleOCR, Unlimited-OCR, GLM-OCR, Qwen3-VL (SageMaker 상의 Hugging Face Transformers)
 - **인프라**: AWS CDK (TypeScript)
-- **빌드 시스템**: Nx Monorepo
-- **AWS 서비스**: CloudFront, S3, API Gateway, Lambda, SageMaker, Cognito, ECR, CodeBuild
+- **빌드 시스템**: Nx Monorepo, mise
+- **AWS 서비스**: CloudFront, S3, API Gateway, Lambda, SageMaker, Cognito, ECR, CodeBuild, Application Auto Scaling
 
 ## 라이선스
 
