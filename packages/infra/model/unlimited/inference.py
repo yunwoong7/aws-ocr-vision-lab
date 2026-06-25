@@ -32,8 +32,8 @@ logger = logging.getLogger(__name__)
 # Where the model weights live inside the container (baked in at build time).
 MODEL_PATH = os.environ.get("UNLIMITED_OCR_MODEL_PATH", "/opt/ml/model/weights")
 # Prompt that drives the document-parsing task (markdown-style output).
+# (PDFs are split into per-page images and each page uses this same prompt.)
 DEFAULT_PROMPT = "<image>document parsing."
-MULTI_PAGE_PROMPT = "<image>Multi page parsing."
 
 # Lazily-initialised, shared across all variant instances in this container.
 _shared_model = None
@@ -198,6 +198,7 @@ class BaseOCRModel(ABC):
         """
         content_parts: List[str] = []
         pages: List[Dict[str, Any]] = []
+        page_count = len(results)
         for page_idx, raw in enumerate(results):
             if not raw:
                 continue
@@ -207,7 +208,7 @@ class BaseOCRModel(ABC):
                 {
                     "input_path": "",
                     "page_index": page_idx,
-                    "page_count": None,
+                    "page_count": page_count,
                     "width": _COORD_GRID,
                     "height": _COORD_GRID,
                     "parsing_res_list": _parse_blocks(raw_str),
@@ -263,32 +264,11 @@ class _UnlimitedOcrVariant(BaseOCRModel):
             )
         return [text]
 
-    def predict_multi(
-        self, image_paths: List[str], options: Dict[str, Any] = None
-    ) -> List[Any]:
-        # Multi-page parsing uses the base preset per Unlimited-OCR docs.
-        # infer_multi() has no eval_mode and never returns the text; it only
-        # writes output_path/result.md when save_results=True, so we read that.
-        model, tokenizer = _ensure_model_loaded()
-        with tempfile.TemporaryDirectory() as out_dir:
-            model.infer_multi(
-                tokenizer,
-                prompt=MULTI_PAGE_PROMPT,
-                image_files=image_paths,
-                output_path=out_dir,
-                image_size=1024,
-                max_length=32768,
-                no_repeat_ngram_size=35,
-                ngram_window=128,
-                save_results=True,
-            )
-            result_md = os.path.join(out_dir, "result.md")
-            if not os.path.exists(result_md):
-                logger.warning("infer_multi produced no result.md in %s", out_dir)
-                return []
-            with open(result_md, "r", encoding="utf-8") as f:
-                text = f.read()
-        return [text]
+    # Multi-page handling lives in predict_fn: PDFs are rendered to per-page
+    # images and each page goes through predict() above, so both variants
+    # produce one results[] entry per page. (We intentionally don't use the
+    # model's infer_multi(), which returns a single <PAGE>-delimited blob that
+    # doesn't map cleanly to per-page blocks.)
 
 
 class GundamModel(_UnlimitedOcrVariant):
@@ -329,6 +309,41 @@ def get_model(model_name: str) -> BaseOCRModel:
         logger.info("Creating new instance of %s", model_name)
         _model_cache[model_name] = MODEL_REGISTRY[model_name]()
     return _model_cache[model_name]
+
+
+# ============================================================================
+# PDF handling
+# ============================================================================
+# Render PDFs at 2x (144 DPI) so small text stays legible to the model.
+_PDF_RENDER_ZOOM = 2.0
+
+
+def _is_pdf(path: str) -> bool:
+    if path.lower().endswith(".pdf"):
+        return True
+    # Fall back to a magic-byte check (key may have no/odd extension).
+    try:
+        with open(path, "rb") as f:
+            return f.read(5) == b"%PDF-"
+    except OSError:
+        return False
+
+
+def _render_pdf_to_images(pdf_path: str, out_dir: str) -> List[str]:
+    """Render each PDF page to a PNG and return the image paths in order."""
+    import fitz  # PyMuPDF, installed in the container image
+
+    image_paths: List[str] = []
+    matrix = fitz.Matrix(_PDF_RENDER_ZOOM, _PDF_RENDER_ZOOM)
+    with fitz.open(pdf_path) as doc:
+        for page_idx in range(doc.page_count):
+            page = doc.load_page(page_idx)
+            pix = page.get_pixmap(matrix=matrix)
+            img_path = os.path.join(out_dir, f"page_{page_idx:04d}.png")
+            pix.save(img_path)
+            image_paths.append(img_path)
+    logger.info("Rendered %d page(s) from PDF", len(image_paths))
+    return image_paths
 
 
 # ============================================================================
@@ -373,18 +388,31 @@ def predict_fn(input_data, _):
     bucket = s3_uri_clean.split("/")[0]
     key = "/".join(s3_uri_clean.split("/")[1:])
 
-    # Download image to temp file
+    # Download the source file to a temp dir. PDFs are rendered to one image
+    # per page; images are used as-is. Each page is run through predict() so
+    # the result has one results[] entry per page (matching the frontend's
+    # per-page navigation), for both gundam and base variants.
     suffix = os.path.splitext(key)[1] or ".jpg"
-    tmp_path = None
-    with tempfile.NamedTemporaryFile(delete=False, suffix=suffix) as tmp:
-        s3_client.download_file(bucket, key, tmp.name)
-        tmp_path = tmp.name
+    work_dir = tempfile.mkdtemp()
+    src_path = os.path.join(work_dir, f"source{suffix}")
 
     try:
-        ocr_model = get_model(model_name)
-        results = ocr_model.predict(tmp_path, model_options)
-        output = ocr_model.format_output(results, output_format="markdown")
+        s3_client.download_file(bucket, key, src_path)
 
+        if _is_pdf(src_path):
+            page_paths = _render_pdf_to_images(src_path, work_dir)
+            if not page_paths:
+                raise ValueError("PDF has no renderable pages")
+        else:
+            page_paths = [src_path]
+
+        ocr_model = get_model(model_name)
+        # One raw result string per page.
+        page_results: List[Any] = []
+        for page_path in page_paths:
+            page_results.extend(ocr_model.predict(page_path, model_options))
+
+        output = ocr_model.format_output(page_results, output_format="markdown")
         output["model"] = model_name
         output["model_options"] = model_options
         output["metadata"] = metadata
@@ -414,8 +442,9 @@ def predict_fn(input_data, _):
         raise
 
     finally:
-        if tmp_path and os.path.exists(tmp_path):
-            os.unlink(tmp_path)
+        import shutil
+
+        shutil.rmtree(work_dir, ignore_errors=True)
 
 
 def output_fn(prediction, accept):
