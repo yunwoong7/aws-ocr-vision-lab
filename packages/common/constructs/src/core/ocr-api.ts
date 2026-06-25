@@ -29,6 +29,11 @@ export interface OcrApiProps {
   paddleEndpointName: string;
   /** Unlimited-OCR family SageMaker endpoint name */
   unlimitedEndpointName: string;
+  /** GLM-OCR family SageMaker endpoint name */
+  glmEndpointName: string;
+  /** Qwen3-VL 4B / 8B SageMaker endpoint names */
+  qwen4bEndpointName: string;
+  qwen8bEndpointName: string;
   lambdaCodePath: string;
 }
 
@@ -39,6 +44,7 @@ export class OcrApi extends Construct {
   public readonly presignedUrlLambda: Function;
   public readonly imageManagerLambda: Function;
   public readonly jobListLambda: Function;
+  public readonly endpointManagerLambda: Function;
 
   constructor(scope: Construct, id: string, props: OcrApiProps) {
     super(scope, id);
@@ -98,6 +104,9 @@ export class OcrApi extends Construct {
         BUCKET_NAME: props.bucket.bucketName,
         PADDLE_ENDPOINT_NAME: props.paddleEndpointName,
         UNLIMITED_ENDPOINT_NAME: props.unlimitedEndpointName,
+        GLM_ENDPOINT_NAME: props.glmEndpointName,
+        QWEN4B_ENDPOINT_NAME: props.qwen4bEndpointName,
+        QWEN8B_ENDPOINT_NAME: props.qwen8bEndpointName,
         REGION: region,
       },
     });
@@ -147,6 +156,25 @@ export class OcrApi extends Construct {
       },
     });
 
+    // Endpoint Manager Lambda (Python) - toggle SageMaker endpoint power
+    // (autoscaling MinCapacity 0<->1) and report status for the UI lights.
+    this.endpointManagerLambda = new Function(this, 'EndpointManagerLambda', {
+      runtime: Runtime.PYTHON_3_14,
+      handler: 'endpoint_manager.handler',
+      code: Code.fromAsset(props.lambdaCodePath),
+      timeout: Duration.seconds(30),
+      memorySize: 128,
+      architecture: Architecture.ARM_64,
+      environment: {
+        REGION: region,
+        PADDLE_ENDPOINT_NAME: props.paddleEndpointName,
+        UNLIMITED_ENDPOINT_NAME: props.unlimitedEndpointName,
+        GLM_ENDPOINT_NAME: props.glmEndpointName,
+        QWEN4B_ENDPOINT_NAME: props.qwen4bEndpointName,
+        QWEN8B_ENDPOINT_NAME: props.qwen8bEndpointName,
+      },
+    });
+
     // Grant S3 permissions
     props.bucket.grantReadWrite(this.requestLambda);
     props.bucket.grantReadWrite(this.statusLambda);
@@ -162,7 +190,31 @@ export class OcrApi extends Construct {
         resources: [
           `arn:aws:sagemaker:${region}:${account}:endpoint/${props.paddleEndpointName}`,
           `arn:aws:sagemaker:${region}:${account}:endpoint/${props.unlimitedEndpointName}`,
+          `arn:aws:sagemaker:${region}:${account}:endpoint/${props.glmEndpointName}`,
+          `arn:aws:sagemaker:${region}:${account}:endpoint/${props.qwen4bEndpointName}`,
+          `arn:aws:sagemaker:${region}:${account}:endpoint/${props.qwen8bEndpointName}`,
         ],
+      }),
+    );
+
+    // Endpoint manager: read endpoint status + toggle autoscaling MinCapacity.
+    // RegisterScalableTarget for SageMaker manages CloudWatch alarms and calls
+    // UpdateEndpointWeightsAndCapacities under the hood, so those permissions
+    // are required too. None support resource-level scoping here -> "*".
+    this.endpointManagerLambda.addToRolePolicy(
+      new PolicyStatement({
+        actions: [
+          'sagemaker:DescribeEndpoint',
+          'sagemaker:DescribeEndpointConfig',
+          'sagemaker:UpdateEndpointWeightsAndCapacities',
+          'application-autoscaling:DescribeScalableTargets',
+          'application-autoscaling:RegisterScalableTarget',
+          'application-autoscaling:DeregisterScalableTarget',
+          'cloudwatch:PutMetricAlarm',
+          'cloudwatch:DeleteAlarms',
+          'cloudwatch:DescribeAlarms',
+        ],
+        resources: ['*'],
       }),
     );
 
@@ -250,6 +302,28 @@ export class OcrApi extends Construct {
     imageProxyResource.addMethod(
       'DELETE',
       new LambdaIntegration(this.imageManagerLambda),
+      {
+        authorizer,
+        authorizationType: AuthorizationType.COGNITO,
+      },
+    );
+
+    // /endpoints - SageMaker endpoint power control (autoscaling MinCapacity)
+    const endpointsResource = this.api.root.addResource('endpoints');
+    // GET /endpoints - status (on/off + light) of every endpoint
+    endpointsResource.addMethod(
+      'GET',
+      new LambdaIntegration(this.endpointManagerLambda),
+      {
+        authorizer,
+        authorizationType: AuthorizationType.COGNITO,
+      },
+    );
+    // POST /endpoints/{family} - body {enabled: bool}; turn one on/off
+    const endpointFamilyResource = endpointsResource.addResource('{family}');
+    endpointFamilyResource.addMethod(
+      'POST',
+      new LambdaIntegration(this.endpointManagerLambda),
       {
         authorizer,
         authorizationType: AuthorizationType.COGNITO,

@@ -13,6 +13,7 @@ import { renderPdfToImage } from '../utils/pdfUtils';
 import { generateCroppedImages } from '../utils/ocrHelpers';
 
 import { AppLayoutContext } from '../components/AppLayout';
+import { useDialog } from '../components/Dialog';
 import { UploadStep } from '../components/OcrPage/UploadStep';
 import { OptionsStep } from '../components/OcrPage/OptionsStep';
 import { ResultStep } from '../components/OcrPage/ResultStep';
@@ -26,8 +27,10 @@ import {
   OcrStructureResultData,
   ResultViewTab,
   ModelOptions,
+  MODEL_INFO,
   getDefaultOptionsForModel,
   getFamilyForModel,
+  getEndpointFamilyForModel,
   isOcrV5Result,
   isStructureResult,
 } from '../types/ocr';
@@ -53,6 +56,7 @@ const SUPPORTED_FILE_TYPES = [
 function OcrPage() {
   const auth = useAuth();
   const runtimeConfig = useRuntimeConfig();
+  const { confirm, alert: showAlert } = useDialog();
   const {
     documents,
     setDocuments,
@@ -72,8 +76,14 @@ function OcrPage() {
   const apiUrl = runtimeConfig.apiUrl || runtimeConfig.apis?.ocr;
 
   // API hooks
-  const { fetchDocuments, deleteS3Files, fetchS3ImageUrl, fetchRunResult } =
-    useOcrApi();
+  const {
+    fetchDocuments,
+    deleteS3Files,
+    fetchS3ImageUrl,
+    fetchRunResult,
+    fetchEndpointStatus,
+    setEndpointPower,
+  } = useOcrApi();
 
   // Fetch documents on mount when authenticated
   useEffect(() => {
@@ -428,64 +438,74 @@ function OcrPage() {
   }, [selectedBlock]);
 
   // File handling
-  const handleFileSelect = useCallback(async (file: File) => {
-    // Check file size
-    if (file.size > MAX_FILE_SIZE) {
-      alert(
-        `File is too large (${(file.size / 1024 / 1024).toFixed(1)}MB). Maximum size is 100MB.`,
-      );
-      return;
-    }
-
-    // Check if file is a PDF
-    if (file.type === 'application/pdf') {
-      try {
-        // Read file as ArrayBuffer
-        const arrayBuffer = await file.arrayBuffer();
-
-        // Convert to base64 first (before ArrayBuffer gets detached)
-        const uint8Array = new Uint8Array(arrayBuffer);
-        let binaryString = '';
-        uint8Array.forEach((byte) => {
-          binaryString += String.fromCharCode(byte);
+  const handleFileSelect = useCallback(
+    async (file: File) => {
+      // Check file size
+      if (file.size > MAX_FILE_SIZE) {
+        await showAlert({
+          title: 'File too large',
+          message: `File is too large (${(file.size / 1024 / 1024).toFixed(1)}MB). Maximum size is 100MB.`,
         });
-        const base64 = btoa(binaryString);
-
-        // Create a copy of the ArrayBuffer for PDF rendering
-        const arrayBufferCopy = uint8Array.buffer.slice(0);
-
-        // Render PDF first page to image for preview
-        pdfArrayBufferRef.current = arrayBufferCopy;
-        const { dataUrl: pdfPreviewUrl, totalPages } = await renderPdfToImage(
-          arrayBufferCopy,
-          1,
-        );
-        if (!pdfPreviewUrl) {
-          alert('Failed to render PDF preview');
-          return;
-        }
-
-        setTotalPdfPages(totalPages);
-        setCurrentPdfPage(1);
-        setImageData({ base64, filename: file.name });
-        setPreviewUrl(pdfPreviewUrl);
-        setStep('options');
-      } catch (error) {
-        console.error('Failed to process PDF:', error);
-        alert('Failed to process PDF file');
+        return;
       }
-    } else {
-      // Handle image files as before
-      const reader = new FileReader();
-      reader.onload = (e) => {
-        const base64 = (e.target?.result as string).split(',')[1];
-        setImageData({ base64, filename: file.name });
-        setPreviewUrl(e.target?.result as string);
-        setStep('options');
-      };
-      reader.readAsDataURL(file);
-    }
-  }, []);
+
+      // Check if file is a PDF
+      if (file.type === 'application/pdf') {
+        try {
+          // Read file as ArrayBuffer
+          const arrayBuffer = await file.arrayBuffer();
+
+          // Convert to base64 first (before ArrayBuffer gets detached)
+          const uint8Array = new Uint8Array(arrayBuffer);
+          let binaryString = '';
+          uint8Array.forEach((byte) => {
+            binaryString += String.fromCharCode(byte);
+          });
+          const base64 = btoa(binaryString);
+
+          // Create a copy of the ArrayBuffer for PDF rendering
+          const arrayBufferCopy = uint8Array.buffer.slice(0);
+
+          // Render PDF first page to image for preview
+          pdfArrayBufferRef.current = arrayBufferCopy;
+          const { dataUrl: pdfPreviewUrl, totalPages } = await renderPdfToImage(
+            arrayBufferCopy,
+            1,
+          );
+          if (!pdfPreviewUrl) {
+            await showAlert({
+              title: 'PDF error',
+              message: 'Failed to render PDF preview',
+            });
+            return;
+          }
+
+          setTotalPdfPages(totalPages);
+          setCurrentPdfPage(1);
+          setImageData({ base64, filename: file.name });
+          setPreviewUrl(pdfPreviewUrl);
+          setStep('options');
+        } catch (error) {
+          console.error('Failed to process PDF:', error);
+          await showAlert({
+            title: 'PDF error',
+            message: 'Failed to process PDF file',
+          });
+        }
+      } else {
+        // Handle image files as before
+        const reader = new FileReader();
+        reader.onload = (e) => {
+          const base64 = (e.target?.result as string).split(',')[1];
+          setImageData({ base64, filename: file.name });
+          setPreviewUrl(e.target?.result as string);
+          setStep('options');
+        };
+        reader.readAsDataURL(file);
+      }
+    },
+    [showAlert],
+  );
 
   const handleDrop = useCallback(
     (e: React.DragEvent) => {
@@ -671,7 +691,10 @@ function OcrPage() {
           runStartTimesRef.current.delete(key);
           pollTimersRef.current.delete(key);
           setIsProcessing(false);
-          alert(data.error || 'Processing failed');
+          void showAlert({
+            title: 'Processing failed',
+            message: data.error || 'OCR processing failed.',
+          });
         } else {
           // Still processing, poll again
           pollTimersRef.current.set(
@@ -687,7 +710,7 @@ function OcrPage() {
         );
       }
     },
-    [runtimeConfig, auth.user?.id_token, updateRun],
+    [runtimeConfig, auth.user?.id_token, updateRun, showAlert],
   );
 
   // Helper: fire the OCR request for one (document, model) run and poll it.
@@ -708,7 +731,9 @@ function OcrPage() {
           document_id: documentId,
           filename,
           model: selectedModel,
-          family: getFamilyForModel(selectedModel),
+          // Backend routes to a SageMaker endpoint by endpoint-family (Qwen
+          // 4B/8B are separate endpoints), not the UI grouping family.
+          family: getEndpointFamilyForModel(selectedModel),
           options: modelOptions,
         }),
       });
@@ -721,8 +746,37 @@ function OcrPage() {
     [apiUrl, auth.user?.id_token, selectedModel, modelOptions],
   );
 
+  // Ensure the selected model's GPU endpoint is powered on before submitting.
+  // Endpoints default to off (cost 0); if off, confirm with the user, turn it
+  // on, and let them proceed (the request queues until the instance is ready).
+  // Returns true if OK to proceed, false if the user cancelled.
+  const ensureEndpointOn = useCallback(async (): Promise<boolean> => {
+    const endpointFamily = getEndpointFamilyForModel(selectedModel);
+    const statuses = await fetchEndpointStatus();
+    const status = statuses.find((s) => s.family === endpointFamily);
+    // Proceed without prompting if status is unknown, already powered on
+    // (MinCapacity>=1), or already serving (green). Only prompt when truly off.
+    if (!status || status.enabled || status.light === 'green') return true;
+
+    const modelTitle = MODEL_INFO[selectedModel]?.title ?? selectedModel;
+    const proceed = await confirm({
+      title: `Turn on ${modelTitle}?`,
+      message:
+        `The "${modelTitle}" model is currently off to save GPU cost. ` +
+        `Turn it on and run now? Powering up the GPU can take a few minutes ` +
+        `before the result is ready.`,
+      confirmLabel: 'Turn on & run',
+    });
+    if (!proceed) return false;
+    await setEndpointPower(endpointFamily, true);
+    return true;
+  }, [selectedModel, fetchEndpointStatus, setEndpointPower, confirm]);
+
   // Submit: first run (new file → upload) or additional run (reuse document).
   const handleSubmit = useCallback(async () => {
+    // Gate on endpoint power (confirm + turn on if off).
+    if (!(await ensureEndpointOn())) return;
+
     const newRun: OcrRun = {
       model: selectedModel,
       family: getFamilyForModel(selectedModel),
@@ -747,7 +801,10 @@ function OcrPage() {
       } catch (err) {
         console.error('Submit error (additional run):', err);
         updateRun(documentId, selectedModel, { status: 'failed' });
-        alert('Failed to submit OCR request. Please try again.');
+        await showAlert({
+          title: 'Submit failed',
+          message: 'Failed to submit OCR request. Please try again.',
+        });
       }
       return;
     }
@@ -826,7 +883,10 @@ function OcrPage() {
         updateRun(realDocumentId, selectedModel, { status: 'failed' });
       }
       setIsProcessing(false);
-      alert('Failed to submit OCR request. Please try again.');
+      await showAlert({
+        title: 'Submit failed',
+        message: 'Failed to submit OCR request. Please try again.',
+      });
     }
   }, [
     currentDocument,
@@ -841,6 +901,8 @@ function OcrPage() {
     setCurrentModel,
     startRun,
     pollRun,
+    ensureEndpointOn,
+    showAlert,
   ]);
 
   // "Run another model": keep the current document selected (so handleSubmit

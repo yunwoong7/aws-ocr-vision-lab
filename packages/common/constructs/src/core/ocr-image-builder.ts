@@ -155,25 +155,43 @@ DOCKERFILE_EOF`,
         'CodeBuild Project Name - Run this to build the Docker image',
     });
 
-    // Lambda function to trigger CodeBuild and wait for completion
-    const buildTriggerLambda = new Function(this, 'BuildTriggerLambda', {
+    // CodeBuild for large model images can run well over the 15-min Lambda
+    // limit, so we use the Provider's async pattern: on_event starts the build
+    // and returns immediately; is_complete is polled until the build SUCCEEDED.
+    // Neither handler blocks, so each invocation stays short.
+    const buildTriggerOnEvent = new Function(this, 'BuildTriggerLambda', {
       runtime: Runtime.PYTHON_3_14,
-      handler: 'index.handler',
-      timeout: Duration.minutes(15),
+      handler: 'index.on_event',
+      timeout: Duration.minutes(5),
       code: Code.fromAsset(props.buildTriggerLambdaPath),
     });
 
-    // Grant CodeBuild permissions to Lambda
-    buildTriggerLambda.addToRolePolicy(
-      new PolicyStatement({
-        actions: ['codebuild:StartBuild', 'codebuild:BatchGetBuilds'],
-        resources: [this.buildProject.projectArn],
-      }),
+    const buildTriggerIsComplete = new Function(
+      this,
+      'BuildTriggerIsComplete',
+      {
+        runtime: Runtime.PYTHON_3_14,
+        handler: 'index.is_complete',
+        timeout: Duration.minutes(2),
+        code: Code.fromAsset(props.buildTriggerLambdaPath),
+      },
     );
 
-    // Create Custom Resource Provider
+    // Grant CodeBuild permissions to both handlers.
+    const codebuildPolicy = new PolicyStatement({
+      actions: ['codebuild:StartBuild', 'codebuild:BatchGetBuilds'],
+      resources: [this.buildProject.projectArn],
+    });
+    buildTriggerOnEvent.addToRolePolicy(codebuildPolicy);
+    buildTriggerIsComplete.addToRolePolicy(codebuildPolicy);
+
+    // Provider polls is_complete every minute for up to 2h (covers large
+    // transformers-from-git + multi-GB weight builds).
     const buildTriggerProvider = new Provider(this, 'BuildTriggerProvider', {
-      onEventHandler: buildTriggerLambda,
+      onEventHandler: buildTriggerOnEvent,
+      isCompleteHandler: buildTriggerIsComplete,
+      queryInterval: Duration.minutes(1),
+      totalTimeout: Duration.hours(2),
     });
 
     // Custom Resource that triggers the build only when Dockerfile changes

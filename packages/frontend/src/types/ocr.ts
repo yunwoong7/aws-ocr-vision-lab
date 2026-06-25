@@ -1,5 +1,28 @@
-// Model family types
-export type OcrFamily = 'paddleocr' | 'unlimited-ocr';
+// Model family types (UI grouping in the options step)
+export type OcrFamily = 'paddleocr' | 'unlimited-ocr' | 'glm-ocr' | 'qwen3-vl';
+
+// Endpoint family = one SageMaker endpoint's power toggle. Usually equals the
+// model family, but Qwen3-VL's 4B/8B are separate endpoints, so they get their
+// own endpoint-family keys while sharing the 'qwen3-vl' UI family.
+export type EndpointFamily =
+  | 'paddleocr'
+  | 'unlimited-ocr'
+  | 'glm-ocr'
+  | 'qwen3-vl-4b'
+  | 'qwen3-vl-8b';
+
+// SageMaker endpoint power status (per endpoint). `light` drives the UI dot:
+//   green = ready, grey = off, yellow = transitioning.
+export interface EndpointStatus {
+  family: EndpointFamily;
+  endpointName: string;
+  enabled: boolean; // autoscaling MinCapacity >= 1
+  minCapacity: number;
+  maxCapacity: number;
+  currentInstanceCount: number;
+  endpointStatus: string;
+  light: 'green' | 'grey' | 'yellow';
+}
 
 // Model (variant) types
 export type OcrModel =
@@ -7,7 +30,10 @@ export type OcrModel =
   | 'pp-structurev3'
   | 'paddleocr-vl'
   | 'gundam'
-  | 'base';
+  | 'base'
+  | 'glm-ocr'
+  | 'qwen3-vl-4b'
+  | 'qwen3-vl-8b';
 
 // Supported languages for PP-OCRv5 and PP-StructureV3
 export type OcrLanguage =
@@ -241,11 +267,19 @@ export type PaddleOcrVlOptions = Record<string, never>;
 // the sizing preset is implied by the selected variant.
 export type UnlimitedOcrOptions = Record<string, never>;
 
+// GLM-OCR has no user-facing options (fixed document-parsing prompt).
+export type GlmOcrOptions = Record<string, never>;
+
+// Qwen3-VL has no user-facing options (fixed extraction prompt).
+export type Qwen3VlOptions = Record<string, never>;
+
 export type ModelOptions =
   | PpOcrV5Options
   | PpStructureV3Options
   | PaddleOcrVlOptions
-  | UnlimitedOcrOptions;
+  | UnlimitedOcrOptions
+  | GlmOcrOptions
+  | Qwen3VlOptions;
 
 // Combined OCR options
 export interface OcrOptions {
@@ -427,6 +461,8 @@ export const DEFAULT_PP_STRUCTUREV3_OPTIONS: PpStructureV3Options = {
 
 export const DEFAULT_PADDLEOCR_VL_OPTIONS: PaddleOcrVlOptions = {};
 export const DEFAULT_UNLIMITED_OCR_OPTIONS: UnlimitedOcrOptions = {};
+export const DEFAULT_GLM_OCR_OPTIONS: GlmOcrOptions = {};
+export const DEFAULT_QWEN3_VL_OPTIONS: Qwen3VlOptions = {};
 
 // Option info for UI
 export interface OptionInfo {
@@ -538,6 +574,36 @@ export const MODEL_INFO: Record<OcrModel, ModelMeta> = {
     supportsLanguage: false,
     defaultOptions: DEFAULT_UNLIMITED_OCR_OPTIONS,
   },
+  'glm-ocr': {
+    family: 'glm-ocr',
+    title: 'GLM-OCR',
+    description:
+      'Zhipu GLM-OCR — compact 0.9B multimodal OCR for documents and PDFs',
+    shortLabel: 'GLM',
+    optionInfo: [],
+    supportsLanguage: false,
+    defaultOptions: DEFAULT_GLM_OCR_OPTIONS,
+  },
+  'qwen3-vl-4b': {
+    family: 'qwen3-vl',
+    title: 'Qwen3-VL 4B',
+    description:
+      'Alibaba Qwen3-VL 4B Instruct — fast vision-language OCR (32 languages)',
+    shortLabel: '4B',
+    optionInfo: [],
+    supportsLanguage: false,
+    defaultOptions: DEFAULT_QWEN3_VL_OPTIONS,
+  },
+  'qwen3-vl-8b': {
+    family: 'qwen3-vl',
+    title: 'Qwen3-VL 8B',
+    description:
+      'Alibaba Qwen3-VL 8B Instruct — higher-quality vision-language OCR',
+    shortLabel: '8B',
+    optionInfo: [],
+    supportsLanguage: false,
+    defaultOptions: DEFAULT_QWEN3_VL_OPTIONS,
+  },
 };
 
 export const FAMILY_INFO: Record<OcrFamily, FamilyMeta> = {
@@ -555,12 +621,34 @@ export const FAMILY_INFO: Record<OcrFamily, FamilyMeta> = {
       'Baidu Unlimited-OCR — long-document parsing vision-language model',
     models: ['gundam', 'base'],
   },
+  'glm-ocr': {
+    id: 'glm-ocr',
+    title: 'GLM-OCR',
+    description: 'Zhipu GLM-OCR — compact 0.9B multimodal OCR model',
+    models: ['glm-ocr'],
+  },
+  'qwen3-vl': {
+    id: 'qwen3-vl',
+    title: 'Qwen3-VL',
+    description: 'Alibaba Qwen3-VL — vision-language OCR (4B / 8B)',
+    models: ['qwen3-vl-4b', 'qwen3-vl-8b'],
+  },
 };
 
 export const FAMILY_LIST: FamilyMeta[] = Object.values(FAMILY_INFO);
 
 export function getFamilyForModel(model: OcrModel): OcrFamily {
   return MODEL_INFO[model].family;
+}
+
+// Map a model to the endpoint-family that owns its SageMaker endpoint (for
+// power status/toggle). Equals the UI family except for Qwen3-VL, whose 4B/8B
+// are separate endpoints keyed by the model id itself.
+export function getEndpointFamilyForModel(model: OcrModel): EndpointFamily {
+  if (model === 'qwen3-vl-4b' || model === 'qwen3-vl-8b') {
+    return model;
+  }
+  return MODEL_INFO[model].family as EndpointFamily;
 }
 
 export function getDefaultOptionsForModel(model: OcrModel): ModelOptions {

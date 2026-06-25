@@ -78,6 +78,63 @@ const unlimitedEndpointStack = new EndpointStack(
 );
 unlimitedEndpointStack.addDependency(modelStack);
 
+// GlmEndpointStack: GLM-OCR SageMaker Endpoint (separate transformers-git runtime)
+// instanceType override: `cdk deploy --context glmInstanceType=ml.g5.2xlarge`
+const glmInstanceType = app.node.tryGetContext('glmInstanceType') as
+  | string
+  | undefined;
+const glmEndpointStack = new EndpointStack(app, 'AwsOcrLab-GlmEndpoint', {
+  env,
+  bucket: infraStack.bucket,
+  imageUri: infraStack.glmImageUri,
+  modelDataUrl: modelStack.glmModelDataUrl,
+  instanceType: glmInstanceType,
+  // transformers-based container; SageMaker needs SAGEMAKER_PROGRAM to locate
+  // inference.py inside model.tar.gz.
+  environment: {
+    SAGEMAKER_PROGRAM: 'inference.py',
+    SAGEMAKER_MODEL_SERVER_TIMEOUT: '600',
+    SAGEMAKER_MODEL_SERVER_WORKERS: '1',
+    TS_DEFAULT_RESPONSE_TIMEOUT: '600',
+    TS_MAX_RESPONSE_SIZE: '104857600',
+  },
+});
+glmEndpointStack.addDependency(modelStack);
+
+// Qwen3-VL 4B/8B SageMaker Endpoints (separate transformers-git runtimes)
+const qwenEnvironment = {
+  SAGEMAKER_PROGRAM: 'inference.py',
+  SAGEMAKER_MODEL_SERVER_TIMEOUT: '600',
+  SAGEMAKER_MODEL_SERVER_WORKERS: '1',
+  TS_DEFAULT_RESPONSE_TIMEOUT: '600',
+  TS_MAX_RESPONSE_SIZE: '104857600',
+};
+const qwen4bInstanceType = app.node.tryGetContext('qwen4bInstanceType') as
+  | string
+  | undefined;
+const qwen4bEndpointStack = new EndpointStack(app, 'AwsOcrLab-Qwen4bEndpoint', {
+  env,
+  bucket: infraStack.bucket,
+  imageUri: infraStack.qwen4bImageUri,
+  modelDataUrl: modelStack.qwen4bModelDataUrl,
+  instanceType: qwen4bInstanceType,
+  environment: qwenEnvironment,
+});
+qwen4bEndpointStack.addDependency(modelStack);
+
+const qwen8bInstanceType = app.node.tryGetContext('qwen8bInstanceType') as
+  | string
+  | undefined;
+const qwen8bEndpointStack = new EndpointStack(app, 'AwsOcrLab-Qwen8bEndpoint', {
+  env,
+  bucket: infraStack.bucket,
+  imageUri: infraStack.qwen8bImageUri,
+  modelDataUrl: modelStack.qwen8bModelDataUrl,
+  instanceType: qwen8bInstanceType,
+  environment: qwenEnvironment,
+});
+qwen8bEndpointStack.addDependency(modelStack);
+
 // ApiStack: API Gateway + Lambda
 const apiStack = new ApiStack(app, 'AwsOcrLab-Api', {
   env,
@@ -85,10 +142,16 @@ const apiStack = new ApiStack(app, 'AwsOcrLab-Api', {
   bucket: infraStack.bucket,
   paddleEndpointName: endpointStack.endpointName,
   unlimitedEndpointName: unlimitedEndpointStack.endpointName,
+  glmEndpointName: glmEndpointStack.endpointName,
+  qwen4bEndpointName: qwen4bEndpointStack.endpointName,
+  qwen8bEndpointName: qwen8bEndpointStack.endpointName,
 });
 apiStack.addDependency(identityStack);
 apiStack.addDependency(endpointStack);
 apiStack.addDependency(unlimitedEndpointStack);
+apiStack.addDependency(glmEndpointStack);
+apiStack.addDependency(qwen4bEndpointStack);
+apiStack.addDependency(qwen8bEndpointStack);
 
 // FrontendStack: CloudFront + S3
 const frontendStack = new FrontendStack(app, 'AwsOcrLab-Frontend', {

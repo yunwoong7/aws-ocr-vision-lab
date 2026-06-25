@@ -6,7 +6,9 @@ import {
   OcrRun,
   OcrModel,
   OcrFamily,
+  EndpointFamily,
   ModelOptions,
+  EndpointStatus,
 } from '../types/ocr';
 
 export interface UseOcrApiReturn {
@@ -21,6 +23,11 @@ export interface UseOcrApiReturn {
     documentId: string,
     model: OcrModel,
   ) => Promise<OcrRun['result'] | null>;
+  fetchEndpointStatus: () => Promise<EndpointStatus[]>;
+  setEndpointPower: (
+    family: EndpointFamily,
+    enabled: boolean,
+  ) => Promise<EndpointStatus | null>;
 }
 
 export function useOcrApi(): UseOcrApiReturn {
@@ -174,5 +181,56 @@ export function useOcrApi(): UseOcrApiReturn {
     [apiUrl, auth.user?.id_token],
   );
 
-  return { fetchDocuments, deleteS3Files, fetchS3ImageUrl, fetchRunResult };
+  const fetchEndpointStatus = useCallback(async (): Promise<
+    EndpointStatus[]
+  > => {
+    if (!apiUrl || !auth.user?.id_token) return [];
+    try {
+      const response = await fetch(`${apiUrl}/endpoints`, {
+        method: 'GET',
+        headers: { Authorization: auth.user.id_token },
+      });
+      if (!response.ok) return [];
+      const data = await response.json();
+      return (data.endpoints ?? []) as EndpointStatus[];
+    } catch (error) {
+      console.error('Failed to fetch endpoint status:', error);
+      return [];
+    }
+  }, [apiUrl, auth.user?.id_token]);
+
+  const setEndpointPower = useCallback(
+    async (
+      family: EndpointFamily,
+      enabled: boolean,
+    ): Promise<EndpointStatus | null> => {
+      if (!apiUrl || !auth.user?.id_token) return null;
+      try {
+        const response = await fetch(`${apiUrl}/endpoints/${family}`, {
+          method: 'POST',
+          headers: {
+            Authorization: auth.user.id_token,
+            'Content-Type': 'application/json',
+          },
+          body: JSON.stringify({ enabled }),
+        });
+        if (!response.ok) return null;
+        const data = await response.json();
+        return (data.endpoint ?? null) as EndpointStatus | null;
+      } catch (error) {
+        console.error('Failed to set endpoint power:', error);
+        return null;
+      }
+    },
+    [apiUrl, auth.user?.id_token],
+  );
+
+  return {
+    fetchDocuments,
+    deleteS3Files,
+    fetchS3ImageUrl,
+    fetchRunResult,
+    fetchEndpointStatus,
+    setEndpointPower,
+  };
 }
