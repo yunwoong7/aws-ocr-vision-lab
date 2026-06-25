@@ -731,7 +731,9 @@ function OcrPage() {
           document_id: documentId,
           filename,
           model: selectedModel,
-          family: getFamilyForModel(selectedModel),
+          // Backend routes to a SageMaker endpoint by endpoint-family (Qwen
+          // 4B/8B are separate endpoints), not the UI grouping family.
+          family: getEndpointFamilyForModel(selectedModel),
           options: modelOptions,
         }),
       });
